@@ -4,12 +4,12 @@ A graduate Wireless Sensor Networks project for experimentally studying how edge
 changes bandwidth use, latency, and reliability as a hybrid network scales and communication
 degrades.
 
-The current implementation is **Phase 4: one physical-node firmware preparation**. It provides a
+The current implementation is **Phase 4: one physical-node ESP32 bring-up**. It provides a
 versioned sensor protocol, concurrent gateway and collector, immutable run manifests, persisted
 health/gateway events, independently accounted virtual generation, CPU/memory sampling,
 subprocess orchestration, evidence-driven analysis, a real Raspberry Pi software rehearsal, and
-host-tested ESP32/BME280 firmware logic. Board-specific building, wiring, and flashing have not
-started.
+host-tested ESP32/BME280 firmware logic. The identified ESP32 target builds successfully; flashing
+and physical sensor validation have not started.
 
 ## Research question
 
@@ -72,7 +72,8 @@ reduces traffic across a real second TCP connection rather than only reducing ro
   rejects incompatible comparisons, and creates experiment-specific plots.
 - Real Mac → Raspberry Pi → Mac RAW and AGGREGATED engineering rehearsals over LAN TCP.
 - Board-independent physical-node NDJSON, validation, sequence, and reconnect-backoff logic with
-  host tests, plus a minimal Arduino BME280/Wi-Fi/persistent-TCP state machine awaiting board ID.
+  host tests, plus a target-built Arduino BME280/Wi-Fi/persistent-TCP state machine for a classic
+  ESP32 DevKit V1 (`esp32doit-devkit-v1`).
 
 Synthetic readings are always labeled `"node_kind":"virtual"` and must not be presented as
 physical measurements.
@@ -108,7 +109,7 @@ They are not TCP/IP packet counts or physical-layer measurements.
 - Python 3.12 or newer (validated with Python 3.13.13 on Mac and 3.13.5 on Raspberry Pi)
 - macOS or Linux for local development
 - Git
-- PlatformIO is required for the eventual Phase 4 board build; the Python system does not require it
+- PlatformIO is required for Phase 4 firmware tests/builds; the Python system does not require it
 
 ```bash
 python3.13 -m venv .venv
@@ -291,11 +292,17 @@ engineering smoke tests in `/tmp`, not scientific experiment results.
 
 ```bash
 source .venv/bin/activate
+pio --version
+pio test -d firmware -e native
+pio run -d firmware -e physical-node
 python -m pytest -q
 ruff check .
+git diff --check
 ```
 
-The current Python suite has 101 passing tests. Coverage includes protocol and framing edge cases,
+The native environment is test-only: use `pio test`, not `pio run`, for `-e native`. The current
+Python suite has 103 passing tests. Coverage includes firmware-emitter compatibility, protocol and
+framing edge cases,
 malformed and abrupt clients, idle/size limits, callback isolation, concurrent virtual nodes,
 reconnection, sequence and liveness transitions, exclusive persistence, aggregation statistics,
 collector outage/recovery, bounded shutdown, event/metrics persistence, manifest Git-state capture,
@@ -318,49 +325,65 @@ aggregation delay is not hidden.
 
 ## Hardware and PlatformIO status
 
-Phase 4 prepares one node, `physical-001`, using PlatformIO with the Arduino framework, the Adafruit
-BME280 library, Wi-Fi, and persistent TCP/NDJSON. Pure encoding, validation, sequence, configuration,
-and backoff behavior is host tested. See [firmware/README.md](firmware/README.md) for the exact
-contract and configuration.
+Phase 4 uses one classic ESP32 DevKit V1 with a CP2102 USB-to-UART bridge. PlatformIO board
+`esp32doit-devkit-v1` builds with Arduino and GNU C++17. Firmware explicitly assigns GPIO21 as SDA
+and GPIO22 as SCL, probes BME280 addresses `0x76` then `0x77`, and targets node
+`physical-001`. See [firmware/README.md](firmware/README.md) for the full contract, verified wiring,
+and tomorrow's end-to-end procedure.
 
-The exact ESP32 board and BME280 breakout are not yet identified. Therefore no PlatformIO board ID,
-GPIO wiring, board build, flash, or hardware claim has been invented. Stop and identify both modules
-before connecting wires. Bring-up must then proceed in these stages:
+The current HW-611 BME280 has an unsoldered header and must not be used. A replacement pre-soldered
+module is expected August 16. Tonight's bring-up therefore connects only the ESP32 and must never
+produce a sensor reading.
 
-### Stage A — sensor only
+### ESP32-only bring-up tonight
 
-1. Confirm the breakout supply requirements and the ESP32's exact SDA/SCL GPIOs.
-2. Connect power, ground, SDA, and SCL only after that mapping is known.
-3. Flash the confirmed board environment and monitor Serial at 115200 baud.
-4. Require BME280 detection at `0x76` or `0x77` and plausible temperature, humidity, and pressure.
-5. Do not involve the Pi until this stage passes.
+Activate the development environment, confirm PlatformIO, and compare the device list before and
+after attaching a known data-capable USB-C cable:
 
-### Stage B — Wi-Fi only
+```bash
+source .venv/bin/activate
+pio --version
+pio device list
+system_profiler SPUSBDataType
+ls /dev/cu.*
+```
 
-1. Create ignored `firmware/include/secrets.hpp` from the committed example.
-2. Verify the ESP32 joins the intended LAN and prints its assigned IP without printing credentials.
-3. Interrupt and restore Wi-Fi; verify bounded reconnect without a reboot loop.
+Use the new CP2102 serial path reported by `pio device list`; do not assume its macOS name. If USB
+shows the CP2102 but no `/dev/cu.*` device appears, rule out the cable/adapter before considering the
+current Silicon Labs CP210x VCP driver.
 
-### Stage C — TCP
+Create the ignored credential file locally and edit only that copy:
 
-1. Check the Pi's current address in `firmware/include/config.hpp`; DHCP may change it.
-2. Run the gateway on `wsn-edge` port 8662.
-3. Verify one persistent ESP32 connection, `physical-001`, and zero schema rejections.
+```bash
+cp firmware/include/secrets.example.hpp firmware/include/secrets.hpp
+```
 
-### Stage D — end to end
+Never commit `secrets.hpp`. Confirm that `wsn-edge` still has DHCP address `192.168.1.187` and its
+gateway is listening on port 8662, then build, upload, and monitor with the detected port:
 
-1. Run the Mac collector and Pi gateway in RAW mode.
-2. Verify sequence `0`, then in-order values, `node_kind:"physical"`, and persisted BME280 values.
-3. Verify RAW forwarding and collector receipt before trying aggregation.
+```bash
+pio run -d firmware -e physical-node
+pio run -d firmware -e physical-node -t upload --upload-port <PORT>
+pio device monitor -d firmware --port <PORT> --baud 115200
+```
 
-### Stage E — failure and recovery
+Expected Serial behavior is: boot at 115200, print `physical-001` and the Pi target, initialize I2C
+on GPIO21/GPIO22, probe `0x76` and `0x77`, report the BME280 absent, and repeat the probe every five
+seconds. With valid local credentials it should also join Wi-Fi, print its DHCP-assigned ESP32 IP,
+and connect to `192.168.1.187:8662`. It must print no `Sample`, `TX`, or JSON reading.
 
-1. Remove ESP32 power and observe Pi transitions ONLINE → SUSPECT → OFFLINE.
-2. Restore power and require Wi-Fi/TCP reconnect plus sequence `0`.
-3. Verify RESET classification, ONLINE recovery, and later in-order sequences.
+Because the gateway creates a registry entry only after a valid application message, a sensor-free
+TCP connection does not create `physical-001`. The Pi may accept the socket and close it after its
+approximately 30-second idle timeout; firmware TCP reconnects are expected in this mode and are not
+a crash or reboot.
 
-Do not flash or wire from this document until the exact hardware identification fields above are
-filled in.
+### BME280 bring-up August 16
+
+With ESP32 power disconnected, wire the replacement at 3.3 V: 3V3→VCC, GND→GND, GPIO22→SCL,
+GPIO21→SDA, 3V3→CSB, and GND→SDO (address `0x76`). After reboot, require detection, a finite and
+plausible temperature/humidity/pressure sample, then validate sequences `0`, `1`, `2`, ... through
+the Pi and Mac collector in RAW mode. Only after that should failure/recovery and aggregation checks
+proceed.
 
 ## Experiments and results status
 
@@ -441,7 +464,7 @@ analysis/
   analyze.py            evidence loading, safeguards, and derived metrics
   plots.py              experiment-specific matplotlib figures
 tests/                   unit and TCP integration tests
-firmware/                Phase 4 one-node firmware preparation and host tests
+firmware/                Phase 4 one-node ESP32 firmware, host tests, and bring-up guide
 results/                 ignored raw/processed/figure outputs plus tracked markers
 requirements.txt         pinned Python dependencies
 pyproject.toml           pytest and Ruff configuration
@@ -449,11 +472,9 @@ pyproject.toml           pytest and Ruff configuration
 
 ## Current limitations and next milestone
 
-The Raspberry Pi software path is validated as an engineering rehearsal. The Phase 4 source is
-prepared but cannot be built honestly until the exact ESP32 PlatformIO board ID is known, and it
-cannot be wired until the exact breakout voltage and pin labels are confirmed.
-
-The next action is hardware identification, followed by the staged bring-up above. Clock
-synchronization, real network impairment, multiple physical nodes, and the final experiment matrix
-remain later work. This repository does not claim a successful ESP32 build, flash, BME280 reading,
-physical performance result, or physical one-way latency.
+The Raspberry Pi software path is validated as an engineering rehearsal, and the identified ESP32
+target builds successfully. The next action is the ESP32-only USB/upload/Serial/Wi-Fi/TCP bring-up
+above; the replacement BME280 is wired only after it arrives. Clock synchronization, real network
+impairment, multiple physical nodes, and the final experiment matrix remain later work. This
+repository does not claim a successful flash, BME280 reading, physical performance result, or
+physical one-way latency.

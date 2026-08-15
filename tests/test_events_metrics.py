@@ -3,6 +3,8 @@ import csv
 import time
 from pathlib import Path
 
+import pytest
+
 from collector.server import CollectorServer
 from gateway.events import ExperimentEventRecorder, GatewayEvent, HealthEvent
 from gateway.metrics import SystemMetricsSampler
@@ -82,6 +84,35 @@ async def test_metrics_sampler_starts_stops_and_produces_rows(tmp_path: Path) ->
     assert len(rows) >= 2
     assert int(rows[0]["process_rss_bytes"]) > 0
     assert sampler.stats.samples_written == len(rows)
+
+
+async def test_metrics_stop_counts_in_flight_csv_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_append = SystemMetricsSampler._append_row
+    started = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def slow_append(self: SystemMetricsSampler, row: dict[str, int | float]) -> None:
+        loop.call_soon_threadsafe(started.set)
+        time.sleep(0.05)
+        original_append(self, row)
+
+    monkeypatch.setattr(SystemMetricsSampler, "_append_row", slow_append)
+    output = tmp_path / "system_metrics.csv"
+    sampler = SystemMetricsSampler(output, interval_seconds=0.01)
+    await sampler.start()
+    worker = sampler._task
+    assert worker is not None
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await asyncio.wait_for(sampler.stop(), timeout=0.5)
+
+    with output.open(newline="") as source:
+        rows = list(csv.DictReader(source))
+    assert len(rows) >= 1
+    assert sampler.stats.samples_written == len(rows)
+    assert worker.done()
+    assert sampler._task is None
 
 
 async def test_real_health_transitions_are_persisted(tmp_path: Path) -> None:

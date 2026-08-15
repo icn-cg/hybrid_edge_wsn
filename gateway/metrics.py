@@ -31,6 +31,7 @@ class SystemMetricsSampler:
         self.process = process or psutil.Process()
         self.stats = MetricsStats()
         self._task: asyncio.Task[None] | None = None
+        self._stop = asyncio.Event()
 
     async def start(self) -> None:
         if self._task is not None:
@@ -38,32 +39,36 @@ class SystemMetricsSampler:
         await asyncio.to_thread(self._create_output)
         self.process.cpu_percent(interval=None)
         psutil.cpu_percent(interval=None)
+        self._stop = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="system-metrics")
 
     async def stop(self) -> None:
         task, self._task = self._task, None
         if task is None:
             return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        self._stop.set()
+        await task
 
     async def _run(self) -> None:
         while True:
-            await asyncio.sleep(self.interval_seconds)
-            timestamp_ms = time.time_ns() // 1_000_000
-            memory = self.process.memory_info()
-            row = {
-                "timestamp_ms": timestamp_ms,
-                "process_cpu_percent": self.process.cpu_percent(interval=None),
-                "process_rss_bytes": memory.rss,
-                "process_vms_bytes": memory.vms,
-                "system_cpu_percent": psutil.cpu_percent(interval=None),
-            }
-            await asyncio.to_thread(self._append_row, row)
-            self.stats.samples_written += 1
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self.interval_seconds)
+                return
+            except TimeoutError:
+                await self._capture_sample()
+
+    async def _capture_sample(self) -> None:
+        timestamp_ms = time.time_ns() // 1_000_000
+        memory = self.process.memory_info()
+        row = {
+            "timestamp_ms": timestamp_ms,
+            "process_cpu_percent": self.process.cpu_percent(interval=None),
+            "process_rss_bytes": memory.rss,
+            "process_vms_bytes": memory.vms,
+            "system_cpu_percent": psutil.cpu_percent(interval=None),
+        }
+        await asyncio.to_thread(self._append_row, row)
+        self.stats.samples_written += 1
 
     def _create_output(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

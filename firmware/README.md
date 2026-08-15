@@ -5,7 +5,8 @@ a classic ESP32 DevKit V1 with a CP2102 USB-to-UART bridge. The PlatformIO envir
 PlatformIO's documented
 [`esp32doit-devkit-v1`](https://docs.platformio.org/en/latest/boards/espressif32/esp32doit-devkit-v1.html)
 board definition, the Arduino framework, and C++17. Hardware upload and sensor validation remain
-human-operated steps.
+human-operated steps. The reproducible target environment pins Espressif 32 platform `7.0.1`,
+Arduino-ESP32 framework package `3.20017.241212`, and Adafruit BME280 library `2.3.0`.
 
 ## Existing version-1 wire contract
 
@@ -39,7 +40,7 @@ gateway's 64 KiB limit.
   readings, encodes exact NDJSON, owns sequence state, and calculates capped exponential backoff.
 - `src/main.cpp` is a small cooperative Arduino loop. It services sensor initialization, Wi-Fi,
   persistent TCP reconnect, sampling, and writes without a task framework or unbounded queue.
-- The [Adafruit BME280 Library 2.3.x](https://registry.platformio.org/libraries/adafruit/Adafruit%20BME280%20Library)
+- The [Adafruit BME280 Library 2.3.0](https://registry.platformio.org/libraries/adafruit/Adafruit%20BME280%20Library)
   is selected from the PlatformIO registry. Its
   [public header](https://github.com/adafruit/Adafruit_BME280_Library/blob/master/Adafruit_BME280.h)
   exposes `begin(address, Wire)` and defines both normal BME280 I2C addresses, `0x76` and `0x77`.
@@ -93,6 +94,9 @@ The configured PlatformIO native environment runs the same custom tests:
 ```bash
 pio test -d firmware -e native
 ```
+
+The native environment is test-only. `pio run -d firmware -e native` is not a supported validation
+command and is expected to lack an application entry point.
 
 These tests validate encoding, newline framing, schema ranges, configuration, boot sequence, write
 success semantics, and capped backoff. They do not claim to test Wi-Fi, I2C, or hardware.
@@ -178,7 +182,9 @@ Gateway TCP connected
 
 The address probes repeat every five seconds. There must be no `Sample`, `TX`, or JSON reading while
 the sensor is absent. A TCP connection alone does not register `physical-001` in the gateway because
-the node sends no fabricated application record.
+the node sends no fabricated application record. The gateway may close this silent socket after its
+approximately 30-second idle timeout; a subsequent firmware TCP reconnect is expected and is not a
+crash or reboot.
 
 ## August 16 BME280 bring-up
 
