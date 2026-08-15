@@ -19,7 +19,7 @@ class BaseSensorMessage(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    version: Literal[PROTOCOL_VERSION]
+    version: Literal[1]
     node_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     node_kind: NodeKind
     sequence: int = Field(ge=0)

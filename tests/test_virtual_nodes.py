@@ -100,3 +100,66 @@ async def test_virtual_node_reconnects_when_gateway_becomes_available() -> None:
 
     assert [message.sequence for message in received] == [0, 1]
     assert node.messages_sent == 2
+
+
+def test_drop_probability_does_not_change_generated_values() -> None:
+    baseline = VirtualNode(VirtualNodeConfig(node_id="virtual-seed", seed=662))
+    dropping = VirtualNode(
+        VirtualNodeConfig(node_id="virtual-seed", seed=662, drop_probability=0.5)
+    )
+
+    baseline_values = [
+        (baseline.make_reading().temperature_c, baseline.make_reading().humidity_pct)
+        for _ in range(5)
+    ]
+    dropping_values = [
+        (dropping.make_reading().temperature_c, dropping.make_reading().humidity_pct)
+        for _ in range(5)
+    ]
+
+    assert baseline_values == dropping_values
+
+
+async def test_reconnect_continues_sequence_without_generating_during_backoff() -> None:
+    probe = GatewayServer(port=0)
+    await probe.start()
+    port = probe.bound_port
+    await probe.stop()
+
+    received: list[SensorMessage] = []
+    node = VirtualNode(
+        VirtualNodeConfig(
+            node_id="virtual-seq",
+            port=port,
+            sampling_interval=0.005,
+            reconnect_initial=0.01,
+            reconnect_max=0.02,
+        )
+    )
+    first = node.make_reading()
+    node_task = asyncio.create_task(node.run(max_samples=3))
+    gateway: GatewayServer | None = None
+    try:
+        await asyncio.sleep(0.03)
+        gateway = GatewayServer(port=port, on_message=lambda item: received.append(item.message))
+        await gateway.start()
+        await asyncio.wait_for(node_task, timeout=1.0)
+        await wait_until(lambda: len(received) == 2)
+    finally:
+        if not node_task.done():
+            node_task.cancel()
+            await asyncio.gather(node_task, return_exceptions=True)
+        if gateway is not None:
+            await gateway.stop()
+
+    assert first.sequence == 0
+    assert [message.sequence for message in received] == [1, 2]
+    assert node.samples_generated == 3
+
+
+async def wait_until(predicate, timeout: float = 1.0) -> None:
+    async def poll() -> None:
+        while not predicate():
+            await asyncio.sleep(0.001)
+
+    await asyncio.wait_for(poll(), timeout=timeout)
