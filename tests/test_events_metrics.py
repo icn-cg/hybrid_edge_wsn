@@ -14,8 +14,11 @@ async def test_event_recorder_persists_gateway_and_health_rows(tmp_path: Path) -
     recorder.record_gateway(
         GatewayEvent(1_000, "upstream", "queue_full_drop", "virtual-001", {"size": 2})
     )
+    recorder.record_gateway(
+        GatewayEvent(1_001, "upstream", "collector_reconnected")
+    )
     recorder.record_health(
-        HealthEvent(1_001, "virtual-001", "virtual", "ONLINE", "SUSPECT", "timeout", 900, 7)
+        HealthEvent(1_002, "virtual-001", "virtual", "ONLINE", "SUSPECT", "timeout", 900, 7)
     )
     await recorder.stop()
 
@@ -25,8 +28,9 @@ async def test_event_recorder_persists_gateway_and_health_rows(tmp_path: Path) -
         health_rows = list(csv.DictReader(source))
     assert gateway_rows[0]["event_type"] == "queue_full_drop"
     assert gateway_rows[0]["details_json"] == '{"size":2}'
+    assert gateway_rows[1]["event_type"] == "collector_reconnected"
     assert health_rows[0]["new_state"] == "SUSPECT"
-    assert recorder.gateway_writer.stats.written == 1
+    assert recorder.gateway_writer.stats.written == 2
     assert recorder.health_writer.stats.written == 1
 
 

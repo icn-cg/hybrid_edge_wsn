@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -58,7 +59,7 @@ class UpstreamForwarder:
         reconnect_initial: float = 0.1,
         reconnect_max: float = 5.0,
         shutdown_timeout: float = 5.0,
-        on_event=None,
+        on_event: Callable[[GatewayEvent], object] | None = None,
     ) -> None:
         if queue_size < 1:
             raise ValueError("queue_size must be positive")
