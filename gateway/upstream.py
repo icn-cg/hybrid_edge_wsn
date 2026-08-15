@@ -40,6 +40,7 @@ class UpstreamStats:
     connection_failures: int = 0
     send_failures: int = 0
     records_abandoned_on_shutdown: int = 0
+    queue_full_drops: int = 0
 
 
 class UpstreamForwarder:
@@ -93,12 +94,31 @@ class UpstreamForwarder:
         await self._queue.put(received)
         self.stats.readings_enqueued += 1
 
+    def try_submit(self, received: ReceivedMessage) -> bool:
+        """Enqueue a reading without blocking the sensor/persist path.
+
+        Returns False and increments ``queue_full_drops`` when the collector
+        path is saturated. Heartbeats are ignored and count as success.
+        """
+
+        if self._worker is None:
+            raise RuntimeError("upstream forwarder is not running")
+        if not isinstance(received.message, ReadingMessage):
+            return True
+        try:
+            self._queue.put_nowait(received)
+        except asyncio.QueueFull:
+            self.stats.queue_full_drops += 1
+            return False
+        self.stats.readings_enqueued += 1
+        return True
+
     async def stop(self) -> None:
         worker, self._worker = self._worker, None
         if worker is None:
             return
-        await self._queue.put(_STOP)
         try:
+            await asyncio.wait_for(self._queue.put(_STOP), timeout=self.shutdown_timeout)
             await asyncio.wait_for(worker, timeout=self.shutdown_timeout)
         except TimeoutError:
             worker.cancel()

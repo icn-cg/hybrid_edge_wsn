@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from collector.server import CollectedRecord, CollectorServer
-from gateway.protocol import ReadingMessage
+from gateway.protocol import HeartbeatMessage, ReadingMessage
 from gateway.registry import SequenceStatus
 from gateway.server import GatewayServer, ReceivedMessage
 from gateway.upstream import ForwardMode, UpstreamForwarder
@@ -268,3 +268,68 @@ async def test_gateway_virtual_node_collector_aggregated_integration() -> None:
     assert forwarder.stats.readings_enqueued == 4
     assert forwarder.stats.upstream_messages == 1
     assert collector.stats.messages_received == 1
+
+
+async def test_heartbeats_are_not_forwarded() -> None:
+    collected: list[CollectedRecord] = []
+    collector = CollectorServer(port=0, on_record=collected.append)
+    await collector.start()
+    forwarder = UpstreamForwarder(
+        "127.0.0.1", collector.bound_port, mode=ForwardMode.RAW, queue_size=2
+    )
+    await forwarder.start()
+    heartbeat = ReceivedMessage(
+        message=HeartbeatMessage(
+            type="heartbeat",
+            version=1,
+            node_id="virtual-hb",
+            node_kind="virtual",
+            sequence=1,
+            timestamp_ms=1_001,
+        ),
+        received_at_ms=2_001,
+        received_monotonic_ns=BASE_MONOTONIC_NS + 1,
+        wire_bytes=80,
+        sequence_status=SequenceStatus.IN_ORDER,
+    )
+    try:
+        assert forwarder.try_submit(heartbeat) is True
+        await forwarder.submit(received("virtual-hb", 0))
+        await forwarder.stop()
+        await wait_until(lambda: len(collected) == 1)
+    finally:
+        await collector.stop()
+
+    assert forwarder.stats.readings_enqueued == 1
+    assert collected[0].record.type == "raw"
+
+
+async def test_try_submit_counts_queue_full_drops_without_blocking() -> None:
+    probe = CollectorServer(port=0)
+    await probe.start()
+    port = probe.bound_port
+    await probe.stop()
+    forwarder = UpstreamForwarder(
+        "127.0.0.1",
+        port,
+        mode=ForwardMode.RAW,
+        queue_size=1,
+        reconnect_initial=0.01,
+        reconnect_max=0.02,
+        shutdown_timeout=0.05,
+    )
+    await forwarder.start()
+    try:
+        assert forwarder.try_submit(received("virtual-drop", 0)) is True
+        await wait_until(lambda: forwarder.stats.connection_failures >= 1)
+        assert forwarder.try_submit(received("virtual-drop", 1)) is True
+        assert forwarder.try_submit(received("virtual-drop", 2)) is False
+        assert forwarder.stats.queue_full_drops == 1
+        assert forwarder.stats.readings_enqueued == 2
+        started = time.monotonic()
+        await forwarder.stop()
+        assert time.monotonic() - started < 1.0
+        assert forwarder.stats.records_abandoned_on_shutdown == 2
+    finally:
+        if forwarder._worker is not None:
+            await forwarder.stop()

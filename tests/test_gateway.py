@@ -319,3 +319,39 @@ async def test_sync_callback_does_not_block_event_loop() -> None:
         await gateway.stop()
 
     assert gateway.stats.valid_messages == 2
+
+
+async def test_liveness_monitor_marks_silent_node_suspect_then_offline() -> None:
+    from gateway.registry import HealthStatus, NodeRegistry
+
+    registry = NodeRegistry(
+        expected_interval_seconds=0.05,
+        suspect_after_intervals=2,
+        offline_after_intervals=4,
+    )
+    gateway = GatewayServer(
+        port=0,
+        registry=registry,
+        liveness_check_interval=0.01,
+        client_idle_timeout=2.0,
+    )
+    await gateway.start()
+    try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", gateway.bound_port)
+        writer.write(reading_line("virtual-quiet", 0))
+        await writer.drain()
+        await wait_until(lambda: "virtual-quiet" in gateway.registry.nodes)
+        await wait_until(
+            lambda: gateway.registry.nodes["virtual-quiet"].health_status
+            is HealthStatus.SUSPECT,
+            timeout=1.0,
+        )
+        await wait_until(
+            lambda: gateway.registry.nodes["virtual-quiet"].health_status
+            is HealthStatus.OFFLINE,
+            timeout=1.0,
+        )
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await gateway.stop()

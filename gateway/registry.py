@@ -101,7 +101,7 @@ class NodeRegistry:
             return SequenceStatus.FIRST
 
         previous_health = record.health_status
-        sequence_status = self._classify_sequence(record, message.sequence, previous_health)
+        sequence_status = self._classify_sequence(record, message.sequence)
         record.messages_received += 1
         record.node_kind = message.node_kind
         record.last_seen_ms = received_at_ms
@@ -155,9 +155,7 @@ class NodeRegistry:
                 changed.append(self._transition(record, target, wall_ms))
         return changed
 
-    def _classify_sequence(
-        self, record: NodeRecord, sequence: int, previous_health: HealthStatus
-    ) -> SequenceStatus:
+    def _classify_sequence(self, record: NodeRecord, sequence: int) -> SequenceStatus:
         if sequence == record.last_sequence:
             record.duplicates += 1
             return SequenceStatus.DUPLICATE
@@ -168,7 +166,9 @@ class NodeRegistry:
                 record.estimated_messages_missing += missing
                 return SequenceStatus.GAP
             return SequenceStatus.IN_ORDER
-        if previous_health is HealthStatus.OFFLINE and sequence == 0:
+        # A return to 0 after a higher sequence is a process/firmware restart.
+        # Requiring OFFLINE first misclassifies fast reconnects as out-of-order forever.
+        if sequence == 0:
             record.sequence_resets += 1
             record.last_sequence = sequence
             return SequenceStatus.RESET

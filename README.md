@@ -225,6 +225,12 @@ generation while disconnected, so availability during connection outages must be
 configured rate and elapsed time rather than only `received / generated`. Physical and synthetic
 measurements will remain explicitly separated.
 
+Sequence reset detection deliberately uses the smallest Phase 2 mechanism: a node incarnation must
+begin at sequence `0`, and observing `0` after a higher value marks RESET. If that first post-reboot
+application message is never observed, later low values remain OUT_OF_ORDER. TCP provides ordered,
+reliable delivery after connection establishment, and future firmware must send sequence `0` first;
+an explicit boot/incarnation identifier is deferred unless physical testing proves it necessary.
+
 ## Repository structure
 
 ```text

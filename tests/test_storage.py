@@ -88,3 +88,39 @@ async def test_gateway_to_store_integration(tmp_path: Path) -> None:
     records = [json.loads(line) for line in output.read_text().splitlines()]
     assert [record["sequence"] for record in records] == [0, 1, 2]
     assert all(record["node_id"] == "virtual-persisted" for record in records)
+
+
+async def test_raw_store_keeps_writing_when_upstream_queue_is_full(tmp_path: Path) -> None:
+    from collector.server import CollectorServer
+    from gateway.upstream import ForwardMode, UpstreamForwarder
+
+    output = tmp_path / "decoupled.ndjson"
+    store = RawMessageStore(output)
+    await store.start()
+    probe = CollectorServer(port=0)
+    await probe.start()
+    port = probe.bound_port
+    await probe.stop()
+    forwarder = UpstreamForwarder(
+        "127.0.0.1",
+        port,
+        mode=ForwardMode.RAW,
+        queue_size=1,
+        reconnect_initial=0.01,
+        reconnect_max=0.02,
+        shutdown_timeout=0.05,
+    )
+    await forwarder.start()
+    try:
+        for sequence in range(4):
+            item = received(sequence)
+            await store.submit(item)
+            forwarder.try_submit(item)
+    finally:
+        await store.stop()
+        await forwarder.stop()
+
+    records = [json.loads(line) for line in output.read_text().splitlines()]
+    assert [record["sequence"] for record in records] == [0, 1, 2, 3]
+    assert store.stats.records_written == 4
+    assert forwarder.stats.queue_full_drops >= 1

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from gateway.protocol import ReadingMessage
+from gateway.registry import SequenceStatus
 
 if TYPE_CHECKING:
     from gateway.server import ReceivedMessage
@@ -70,6 +71,8 @@ class WindowAggregator:
         """Add one reading and return a completed prior window if the boundary was crossed."""
 
         if not isinstance(received.message, ReadingMessage):
+            return None
+        if received.sequence_status is SequenceStatus.DUPLICATE:
             return None
         completed: WindowSummary | None = None
         if self._current is None:

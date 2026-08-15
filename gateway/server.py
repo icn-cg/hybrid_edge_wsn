@@ -361,7 +361,7 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
         if store is not None:
             await store.submit(received)
         if forwarder is not None:
-            await forwarder.submit(received)
+            forwarder.try_submit(received)
 
     registry = NodeRegistry(
         expected_interval_seconds=args.expected_interval,

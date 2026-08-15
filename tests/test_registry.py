@@ -144,3 +144,78 @@ def test_health_threshold_configuration_is_validated() -> None:
         assert "offline threshold" in str(exc)
     else:
         raise AssertionError("invalid thresholds were accepted")
+
+
+def test_sequence_zero_after_higher_sequence_is_reset_while_online() -> None:
+    registry = NodeRegistry()
+    assert observe(registry, 20) is SequenceStatus.FIRST
+    reset = observe(registry, 0)
+    follow = observe(registry, 1)
+
+    record = registry.nodes["virtual-001"]
+    assert reset is SequenceStatus.RESET
+    assert follow is SequenceStatus.IN_ORDER
+    assert record.sequence_resets == 1
+    assert record.last_sequence == 1
+    assert record.out_of_order == 0
+
+
+def test_sequence_zero_while_suspect_is_reset_not_out_of_order() -> None:
+    registry = NodeRegistry(
+        expected_interval_seconds=1.0,
+        suspect_after_intervals=3,
+        offline_after_intervals=5,
+    )
+    observe(registry, 8, monotonic_ns=1_000_000_000)
+    registry.refresh_health(now_monotonic_ns=4_000_000_000, now_ms=4_000)
+
+    status = registry.observe(
+        reading("virtual-001", 0),
+        received_at_ms=4_100,
+        received_monotonic_ns=4_100_000_000,
+    )
+    record = registry.nodes["virtual-001"]
+    assert record.health_status is HealthStatus.ONLINE
+    assert status is SequenceStatus.RESET
+    assert record.out_of_order == 0
+    assert record.last_sequence == 0
+
+
+def test_late_arrival_after_gap_does_not_reduce_estimated_missing() -> None:
+    registry = NodeRegistry()
+    observe(registry, 10)
+    observe(registry, 13)
+    observe(registry, 12)
+
+    record = registry.nodes["virtual-001"]
+    assert record.estimated_messages_missing == 2
+    assert record.out_of_order == 1
+    assert record.last_sequence == 13
+
+
+def test_silent_node_does_not_change_healthy_peer_status() -> None:
+    registry = NodeRegistry(
+        expected_interval_seconds=1.0,
+        suspect_after_intervals=3,
+        offline_after_intervals=5,
+    )
+    registry.observe(
+        reading("virtual-quiet", 0),
+        received_at_ms=1_000,
+        received_monotonic_ns=1_000_000_000,
+    )
+    registry.observe(
+        reading("virtual-active", 0),
+        received_at_ms=1_000,
+        received_monotonic_ns=1_000_000_000,
+    )
+    registry.observe(
+        reading("virtual-active", 1),
+        received_at_ms=4_500,
+        received_monotonic_ns=4_500_000_000,
+    )
+    changed = registry.refresh_health(now_monotonic_ns=4_500_000_000, now_ms=4_500)
+
+    assert [item.node_id for item in changed] == ["virtual-quiet"]
+    assert registry.nodes["virtual-quiet"].health_status is HealthStatus.SUSPECT
+    assert registry.nodes["virtual-active"].health_status is HealthStatus.ONLINE
