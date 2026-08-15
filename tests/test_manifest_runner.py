@@ -141,3 +141,14 @@ async def test_repeated_runs_create_distinct_directories_and_seeds(tmp_path: Pat
     first_manifest = json.loads(first.manifest.read_text())
     second_manifest = json.loads(second.manifest.read_text())
     assert [first_manifest["random_seed"], second_manifest["random_seed"]] == [662, 663]
+
+
+async def test_local_runner_rejects_unstarted_physical_nodes(tmp_path: Path) -> None:
+    runner = ExperimentRunner(results_root=tmp_path)
+
+    with pytest.raises(ValueError, match="physical_node_count must be zero"):
+        await runner.run_once(
+            config(node_count=2, virtual_node_count=1, physical_node_count=1)
+        )
+
+    assert not tuple(tmp_path.iterdir())

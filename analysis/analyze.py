@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-from experiments.manifest import write_json_exclusive
+from experiments.manifest import git_context, write_json_exclusive
 from gateway.protocol import ReadingMessage
 from gateway.registry import SequenceStatus
 from gateway.upstream_protocol import RawUpstreamRecord, encode_upstream_record
@@ -21,6 +21,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 DEFAULT_RAW_ROOT = REPOSITORY / "results" / "raw"
 DEFAULT_PROCESSED_ROOT = REPOSITORY / "results" / "processed"
 DEFAULT_FIGURES_ROOT = REPOSITORY / "results" / "figures"
+ANALYSIS_SCHEMA_VERSION = 2
 
 
 class AnalysisError(ValueError):
@@ -38,6 +39,7 @@ class LoadedRun:
     system_metrics: pd.DataFrame
     health_events: pd.DataFrame
     gateway_summary: dict[str, Any]
+    run_summary: dict[str, Any]
 
 
 def analyze_run(
@@ -58,26 +60,51 @@ def analyze_run(
         if item.get("type") == "reading"
         and measurement_start <= int(item["gateway_received_at_ms"]) < measurement_end
     ]
-    unique_upstream, upstream_duplicates = _deduplicate_upstream(
-        _filter_upstream(loaded.upstream, measurement_start, measurement_end)
+    filtered_upstream = _filter_upstream(
+        loaded.upstream, measurement_start, measurement_end
     )
-    scheduled = _sum_column(loaded.node_stats, "scheduled_readings")
-    generated = _sum_column(loaded.node_stats, "samples_generated")
-    attempted = _sum_column(loaded.node_stats, "send_attempts")
-    successful_writes = _sum_column(loaded.node_stats, "successful_writes")
-    application_drops = _sum_column(loaded.node_stats, "application_drops")
+    expected_record_type = (
+        "raw" if loaded.manifest["aggregation_mode"] == "raw" else "aggregate"
+    )
+    unexpected_record_types = {
+        str(wrapper.get("record", {}).get("type"))
+        for wrapper in loaded.upstream
+        if wrapper.get("record", {}).get("type") != expected_record_type
+    }
+    if unexpected_record_types:
+        raise AnalysisError(
+            f"manifest mode {loaded.manifest['aggregation_mode']!r} conflicts with "
+            f"collector record types: {unexpected_record_types}"
+        )
+    unique_upstream, upstream_duplicates = _deduplicate_upstream(filtered_upstream)
+    virtual_node_stats = loaded.node_stats[
+        loaded.node_stats["node_kind"] == "virtual"
+    ]
+    scheduled = _sum_column(virtual_node_stats, "scheduled_readings")
+    generated = _sum_column(virtual_node_stats, "samples_generated")
+    attempted = _sum_column(virtual_node_stats, "send_attempts")
+    successful_writes = _sum_column(virtual_node_stats, "successful_writes")
+    application_drops = _sum_column(virtual_node_stats, "application_drops")
     gateway_received = len(readings)
+    virtual_readings = [item for item in readings if item.get("node_kind") == "virtual"]
+    virtual_unique_received = sum(
+        item.get("sequence_status") != SequenceStatus.DUPLICATE.value
+        for item in virtual_readings
+    )
     latencies = [
         int(item["gateway_received_at_ms"]) - int(item["timestamp_ms"])
-        for item in readings
-        if item.get("node_kind") == "virtual"
+        for item in virtual_readings
+        if item.get("sequence_status") != SequenceStatus.DUPLICATE.value
     ]
     latencies = [value for value in latencies if value >= 0]
-    baseline_bytes = sum(_hypothetical_raw_bytes(item) for item in readings)
+    baseline_readings = _baseline_readings(
+        readings, unique_upstream, loaded.manifest["aggregation_mode"]
+    )
+    baseline_bytes = sum(_hypothetical_raw_bytes(item) for item in baseline_readings)
     unique_upstream_bytes = sum(int(item["upstream_wire_bytes"]) for item in unique_upstream)
     actual_upstream_bytes = sum(
         int(item["upstream_wire_bytes"])
-        for item in _filter_upstream(loaded.upstream, measurement_start, measurement_end)
+        for item in filtered_upstream
     )
     information_delays = [_information_delay(item) for item in unique_upstream]
     information_delays = [value for value in information_delays if value >= 0]
@@ -90,11 +117,14 @@ def analyze_run(
         )
         for status in SequenceStatus
     }
-    virtual_received = sum(item.get("node_kind") == "virtual" for item in readings)
+    virtual_received = len(virtual_readings)
     physical_received = sum(item.get("node_kind") == "physical" for item in readings)
+    analysis_commit, analysis_dirty, analysis_status = git_context(REPOSITORY)
     warnings: list[str] = []
     if loaded.manifest.get("git_dirty"):
         warnings.append("run was created from a dirty Git worktree")
+    if analysis_dirty:
+        warnings.append("analysis was executed from a dirty Git worktree")
     queue_drops = int(
         loaded.gateway_summary.get("upstream", {}).get("queue_full_drops", 0)
         if loaded.gateway_summary.get("upstream")
@@ -104,9 +134,45 @@ def analyze_run(
         warnings.append("upstream queue drops occurred; reduction includes forwarding loss")
     if loaded.manifest["aggregation_mode"] == "aggregated" and not unique_upstream:
         warnings.append("no complete aggregation window fell wholly inside measurement interval")
+    premeasurement_arrivals = sum(
+        int(item["timestamp_ms"]) < measurement_start for item in virtual_readings
+    )
+    delivery_invalid_reasons: list[str] = []
+    if premeasurement_arrivals:
+        warnings.append(
+            "virtual readings generated before measurement_start arrived in the "
+            "measurement receive window"
+        )
+        delivery_invalid_reasons.append("premeasurement_virtual_arrivals")
+    if virtual_unique_received > scheduled:
+        warnings.append(
+            "delivery ratio is invalid because unique virtual readings exceed scheduled"
+        )
+        delivery_invalid_reasons.append("received_exceeds_scheduled")
+    if generated > scheduled:
+        warnings.append("generated readings exceed independent scheduled denominator")
+        delivery_invalid_reasons.append("generated_exceeds_scheduled")
+    if scheduled == 0:
+        warnings.append("delivery ratio is undefined because no readings were scheduled")
+        delivery_invalid_reasons.append("zero_scheduled_readings")
+    if actual_upstream_bytes != unique_upstream_bytes:
+        warnings.append(
+            "collector retransmissions occurred; actual and unique upstream metrics differ"
+        )
+    if metrics.empty:
+        warnings.append("no system-metric samples fell inside the measurement interval")
+
+    delivery_ratio = (
+        None
+        if delivery_invalid_reasons
+        else _safe_ratio(virtual_unique_received, scheduled)
+    )
 
     result: dict[str, Any] = {
-        "analysis_schema_version": 1,
+        "analysis_schema_version": ANALYSIS_SCHEMA_VERSION,
+        "analysis_git_commit": analysis_commit,
+        "analysis_git_dirty": analysis_dirty,
+        "analysis_git_status": analysis_status,
         "run_id": loaded.manifest["run_id"],
         "experiment_type": loaded.manifest["experiment_type"],
         "node_count": loaded.manifest["node_count"],
@@ -124,11 +190,21 @@ def analyze_run(
         "application_drops": application_drops,
         "gateway_received_readings": gateway_received,
         "virtual_received_readings": virtual_received,
+        "virtual_unique_received_readings": virtual_unique_received,
         "physical_received_readings": physical_received,
-        "delivery_ratio": _safe_ratio(gateway_received, scheduled),
+        "delivery_ratio": delivery_ratio,
+        "delivery_ratio_valid": not delivery_invalid_reasons,
+        "delivery_ratio_invalid_reasons": delivery_invalid_reasons,
+        "delivery_ratio_definition": (
+            "non-duplicate virtual readings received during the measurement receive "
+            "window / independently scheduled virtual readings"
+        ),
         "generation_availability": _safe_ratio(generated, scheduled),
         "send_success_ratio": _safe_ratio(successful_writes, attempted),
         "throughput_readings_per_second": gateway_received / duration_seconds,
+        "virtual_unique_throughput_readings_per_second": (
+            virtual_unique_received / duration_seconds
+        ),
         "sequence_counts": sequence_counts,
         "latency_mean_ms": _mean(latencies),
         "latency_median_ms": _median(latencies),
@@ -137,19 +213,29 @@ def analyze_run(
         "process_rss_mean_bytes": _frame_mean(metrics, "process_rss_bytes"),
         "process_rss_max_bytes": _frame_max(metrics, "process_rss_bytes"),
         "process_vms_mean_bytes": _frame_mean(metrics, "process_vms_bytes"),
-        "collector_messages_actual": len(
-            _filter_upstream(loaded.upstream, measurement_start, measurement_end)
-        ),
+        "collector_messages_actual": len(filtered_upstream),
         "collector_bytes_actual": actual_upstream_bytes,
         "collector_messages_unique": len(unique_upstream),
         "collector_bytes_unique": unique_upstream_bytes,
         "collector_duplicate_record_ids": upstream_duplicates,
-        "raw_baseline_messages": gateway_received,
+        "raw_baseline_messages": len(baseline_readings),
         "raw_baseline_upstream_bytes": baseline_bytes,
         "upstream_message_reduction": _reduction(
-            len(unique_upstream), gateway_received
+            len(filtered_upstream), len(baseline_readings)
         ),
-        "upstream_byte_reduction": _reduction(unique_upstream_bytes, baseline_bytes),
+        "upstream_message_reduction_actual": _reduction(
+            len(filtered_upstream), len(baseline_readings)
+        ),
+        "upstream_message_reduction_unique": _reduction(
+            len(unique_upstream), len(baseline_readings)
+        ),
+        "upstream_byte_reduction": _reduction(actual_upstream_bytes, baseline_bytes),
+        "upstream_byte_reduction_actual": _reduction(
+            actual_upstream_bytes, baseline_bytes
+        ),
+        "upstream_byte_reduction_unique": _reduction(
+            unique_upstream_bytes, baseline_bytes
+        ),
         "information_delay_mean_ms": _mean(information_delays),
         "information_delay_p95_ms": _percentile(information_delays, 0.95),
         "upstream_queue_full_drops": queue_drops,
@@ -176,6 +262,24 @@ def load_run(run_dir: str | Path) -> LoadedRun:
     manifest = json.loads(manifest_path.read_text())
     if manifest.get("manifest_schema_version") != 1:
         raise AnalysisError("unsupported manifest schema")
+    required_manifest_fields = (
+        "run_id",
+        "experiment_type",
+        "node_count",
+        "aggregation_mode",
+        "aggregation_window_seconds",
+        "drop_probability",
+        "artificial_delay_ms",
+    )
+    missing_manifest_fields = [
+        field for field in required_manifest_fields if field not in manifest
+    ]
+    if missing_manifest_fields:
+        raise AnalysisError(
+            "manifest lacks required fields: " + ", ".join(missing_manifest_fields)
+        )
+    if manifest["aggregation_mode"] not in {"raw", "aggregated"}:
+        raise AnalysisError("manifest contains unsupported aggregation mode")
     simulator_path = directory / "simulator_summary.json"
     if not simulator_path.exists():
         raise AnalysisError("missing simulator_summary.json")
@@ -183,6 +287,36 @@ def load_run(run_dir: str | Path) -> LoadedRun:
     required = ("measurement_start_ms", "measurement_end_ms")
     if any(key not in simulator for key in required):
         raise AnalysisError("simulator summary lacks measurement boundaries")
+    summary_path = directory / "run_summary.json"
+    if not summary_path.exists():
+        raise AnalysisError("missing run_summary.json")
+    run_summary = json.loads(summary_path.read_text())
+    if run_summary.get("run_summary_schema_version") != 1:
+        raise AnalysisError("unsupported run summary schema")
+    if run_summary.get("run_id") != manifest.get("run_id"):
+        raise AnalysisError("run summary does not match manifest run_id")
+    if run_summary.get("status") != "complete":
+        raise AnalysisError("run is not complete")
+    child_statuses = run_summary.get("children")
+    if not isinstance(child_statuses, dict) or set(child_statuses) != {
+        "collector",
+        "gateway",
+        "simulator",
+    }:
+        raise AnalysisError("run summary lacks required child statuses")
+    if any(returncode != 0 for returncode in child_statuses.values()):
+        raise AnalysisError("run summary contains unsuccessful child status")
+    summary_config = run_summary.get("config")
+    if isinstance(summary_config, dict):
+        mismatches = [
+            key
+            for key, value in summary_config.items()
+            if key not in manifest or manifest[key] != value
+        ]
+        if mismatches:
+            raise AnalysisError(
+                "run summary config conflicts with manifest: " + ", ".join(mismatches)
+            )
     required_files = (
         "readings.ndjson",
         "upstream.ndjson",
@@ -203,6 +337,7 @@ def load_run(run_dir: str | Path) -> LoadedRun:
         system_metrics=pd.read_csv(directory / "system_metrics.csv"),
         health_events=pd.read_csv(directory / "health_events.csv"),
         gateway_summary=_read_json_optional(directory / "gateway_summary.json"),
+        run_summary=run_summary,
     )
 
 
@@ -212,9 +347,15 @@ def analyze_experiment(
     raw_root: str | Path = DEFAULT_RAW_ROOT,
     processed_root: str | Path = DEFAULT_PROCESSED_ROOT,
     figures_root: str | Path = DEFAULT_FIGURES_ROOT,
+    allow_dirty: bool = False,
 ) -> Path:
     from analysis.plots import plot_comparison
 
+    _analysis_commit, analysis_dirty, _analysis_status = git_context(REPOSITORY)
+    if analysis_dirty and not allow_dirty:
+        raise AnalysisError(
+            "dirty analysis worktree cannot produce a comparison without --allow-dirty"
+        )
     run_dirs = []
     for manifest_path in Path(raw_root).glob("*/manifest.json"):
         manifest = json.loads(manifest_path.read_text())
@@ -223,15 +364,21 @@ def analyze_experiment(
     if not run_dirs:
         raise AnalysisError(f"no {experiment_type} runs found")
     manifests = [load_run(path).manifest for path in run_dirs]
-    _validate_comparison(manifests, experiment_type)
+    _validate_comparison(manifests, experiment_type, allow_dirty=allow_dirty)
+    existing_outputs = [
+        Path(processed_root) / run_dir.name
+        for run_dir in run_dirs
+        if (Path(processed_root) / run_dir.name).exists()
+    ]
+    if existing_outputs:
+        raise AnalysisError(
+            "refusing to reuse possibly stale processed output; use a fresh "
+            f"--processed-root: {existing_outputs[0]}"
+        )
     metrics = []
     for run_dir in run_dirs:
-        output = Path(processed_root) / run_dir.name
-        if output.exists():
-            metrics.append(json.loads((output / "metrics.json").read_text()))
-        else:
-            result, _output = analyze_run(run_dir, processed_root=processed_root)
-            metrics.append(result)
+        result, _output = analyze_run(run_dir, processed_root=processed_root)
+        metrics.append(result)
     comparison_dir = Path(processed_root) / f"comparison-{experiment_type}"
     comparison_dir.mkdir(parents=True, exist_ok=False)
     frame = pd.json_normalize(metrics, sep=".")
@@ -240,7 +387,22 @@ def analyze_experiment(
     return comparison_dir
 
 
-def _validate_comparison(manifests: list[dict[str, Any]], experiment_type: str) -> None:
+def _validate_comparison(
+    manifests: list[dict[str, Any]],
+    experiment_type: str,
+    *,
+    allow_dirty: bool = False,
+) -> None:
+    dirty_run_ids = [
+        str(manifest.get("run_id", "<unknown>"))
+        for manifest in manifests
+        if manifest.get("git_dirty")
+    ]
+    if dirty_run_ids and not allow_dirty:
+        raise AnalysisError(
+            "dirty Git runs cannot enter a comparison without --allow-dirty: "
+            + ", ".join(dirty_run_ids)
+        )
     common_dimensions = (
         "duration_seconds",
         "warmup_seconds",
@@ -251,6 +413,8 @@ def _validate_comparison(manifests: list[dict[str, Any]], experiment_type: str) 
         "forwarder_queue_size",
         "storage_queue_size",
         "event_queue_size",
+        "liveness_check_interval_seconds",
+        "metrics_interval_seconds",
     )
     comparison_dimensions = {
         "scaling": (
@@ -341,18 +505,49 @@ def _filter_upstream(
     return filtered
 
 
+def _baseline_readings(
+    readings: list[dict[str, Any]],
+    unique_upstream: list[dict[str, Any]],
+    aggregation_mode: str,
+) -> list[dict[str, Any]]:
+    """Use the same eligible time coverage for observed and hypothetical traffic."""
+
+    if aggregation_mode == "raw":
+        return readings
+    windows = [
+        (
+            int(wrapper["record"]["window_start_ms"]),
+            int(wrapper["record"]["window_end_ms"]),
+        )
+        for wrapper in unique_upstream
+        if wrapper.get("record", {}).get("type") == "aggregate"
+    ]
+    return [
+        item
+        for item in readings
+        if any(
+            start <= int(item["gateway_received_at_ms"]) < end
+            for start, end in windows
+        )
+    ]
+
+
 def _deduplicate_upstream(
     records: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
-    seen: set[str] = set()
+    seen: dict[str, dict[str, Any]] = {}
     unique = []
     duplicates = 0
     for wrapper in records:
         record_id = str(wrapper["record"]["record_id"])
         if record_id in seen:
+            if wrapper["record"] != seen[record_id]:
+                raise AnalysisError(
+                    f"collector record_id {record_id!r} has conflicting payloads"
+                )
             duplicates += 1
             continue
-        seen.add(record_id)
+        seen[record_id] = wrapper["record"]
         unique.append(wrapper)
     return unique, duplicates
 
@@ -406,20 +601,29 @@ def _resilience_metrics(
 ) -> dict[str, float | None]:
     failure = loaded.simulator.get("failure_timestamp_ms")
     recovery = loaded.simulator.get("recovery_timestamp_ms")
-    detection = None
+    failure_node_id = str(loaded.simulator.get("failure_node_id") or "virtual-000")
+    suspect_detection = None
+    offline_detection = None
     recovery_detection = None
     healthy_throughput = None
     if failure is not None and not loaded.health_events.empty:
+        suspect = loaded.health_events[
+            (loaded.health_events["node_id"] == failure_node_id)
+            & (loaded.health_events["new_state"] == "SUSPECT")
+            & (loaded.health_events["timestamp_ms"] >= failure)
+        ]
+        if not suspect.empty:
+            suspect_detection = float(suspect.iloc[0]["timestamp_ms"] - failure)
         offline = loaded.health_events[
-            (loaded.health_events["node_id"] == "virtual-000")
+            (loaded.health_events["node_id"] == failure_node_id)
             & (loaded.health_events["new_state"] == "OFFLINE")
             & (loaded.health_events["timestamp_ms"] >= failure)
         ]
         if not offline.empty:
-            detection = float(offline.iloc[0]["timestamp_ms"] - failure)
+            offline_detection = float(offline.iloc[0]["timestamp_ms"] - failure)
     if recovery is not None and not loaded.health_events.empty:
         online = loaded.health_events[
-            (loaded.health_events["node_id"] == "virtual-000")
+            (loaded.health_events["node_id"] == failure_node_id)
             & (loaded.health_events["new_state"] == "ONLINE")
             & (loaded.health_events["timestamp_ms"] >= recovery)
         ]
@@ -430,13 +634,17 @@ def _resilience_metrics(
         interval_seconds = (interval_end - failure) / 1_000
         if interval_seconds > 0:
             healthy = sum(
-                item["node_id"] != "virtual-000"
+                item["node_id"] != failure_node_id
+                and item.get("node_kind") == "virtual"
+                and item.get("sequence_status") != SequenceStatus.DUPLICATE.value
                 and failure <= item["gateway_received_at_ms"] < interval_end
                 for item in readings
             )
             healthy_throughput = healthy / interval_seconds
     return {
-        "failure_detection_time_ms": detection,
+        "failure_detection_time_ms": suspect_detection,
+        "failure_suspect_detection_time_ms": suspect_detection,
+        "failure_offline_detection_time_ms": offline_detection,
         "recovery_detection_time_ms": recovery_detection,
         "healthy_peer_throughput_during_failure": healthy_throughput,
     }
@@ -493,6 +701,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-root", type=Path, default=DEFAULT_RAW_ROOT)
     parser.add_argument("--processed-root", type=Path, default=DEFAULT_PROCESSED_ROOT)
     parser.add_argument("--figures-root", type=Path, default=DEFAULT_FIGURES_ROOT)
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="permit dirty-worktree runs in an engineering comparison",
+    )
     return parser.parse_args()
 
 
@@ -508,6 +721,7 @@ def main() -> None:
             raw_root=args.raw_root,
             processed_root=args.processed_root,
             figures_root=args.figures_root,
+            allow_dirty=args.allow_dirty,
         )
     print(output)
 

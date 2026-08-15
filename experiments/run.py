@@ -52,6 +52,11 @@ class ExperimentRunner:
         self.simulator_module = simulator_module
 
     async def run_once(self, config: ExperimentConfig) -> RunArtifacts:
+        if config.physical_node_count:
+            raise ValueError(
+                "the local subprocess runner supports virtual nodes only; "
+                "physical_node_count must be zero"
+            )
         gateway_port = config.gateway_port or _free_port()
         collector_port = config.collector_port or _free_port()
         while collector_port == gateway_port:

@@ -184,14 +184,23 @@ python -m analysis.analyze --experiment aggregation
 Per-run derived data goes to `results/processed/<run-id>/`; comparisons go to
 `results/processed/comparison-<experiment>/`; figures go to
 `results/figures/<experiment>/`. Outputs use exclusive creation so an earlier analysis is not
-silently replaced.
+silently replaced. Experiment-level analysis refuses to reuse an existing per-run processed
+directory; use a fresh `--processed-root` when reanalyzing with newer code.
 
 Analysis derives scheduled/generation/send/gateway reliability ratios, sequence status counts,
 throughput, local virtual-node latency, gateway CPU/memory, unique collector messages and exact
 NDJSON application bytes, RAW baselines and reductions, information delay, and failure/recovery
-metrics. It deduplicates collector records by `record_id` only in processed data. It rejects absent
-or unsupported manifests and incompatible comparison dimensions, and warns when evidence came from
-a dirty Git tree or experienced forwarding-queue drops.
+metrics. Actual collector messages and bytes—including retransmissions—are the primary upstream
+network-efficiency metrics; deduplicated values are retained as logical-record metrics. Conflicting
+payloads under one `record_id` are rejected.
+
+Analysis rejects absent, failed, interrupted, schema-incompatible, or internally inconsistent runs.
+`delivery_ratio` uses non-duplicate virtual readings received in the measurement receive window over
+the independent scheduled denominator. If boundary leakage or accounting could make that value
+exceed one, analysis emits `null`, records the invalidation reason, and plotting excludes it. A
+comparison also rejects dirty run manifests, a dirty analysis worktree, incompatible liveness or
+metrics sampling cadences, and stale processed outputs. `--allow-dirty` exists only for explicitly
+labeled engineering comparisons.
 
 ## Manual component operation
 
@@ -282,7 +291,7 @@ python -m pytest -q
 ruff check .
 ```
 
-The current suite has 90 passing tests. Coverage includes protocol and framing edge cases, malformed
+The current suite has 100 passing tests. Coverage includes protocol and framing edge cases, malformed
 and abrupt clients, idle/size limits, callback isolation, concurrent virtual nodes, reconnection,
 sequence and liveness transitions, exclusive persistence, aggregation statistics, collector
 outage/recovery, bounded shutdown, event/metrics persistence, manifest Git-state capture, node-side
@@ -319,7 +328,9 @@ The scheduled denominator is defined independently as
 `floor(measurement_duration / configured_interval)` per virtual node. Node statistics separately
 record samples generated, sends attempted, application writes completed, application drops, and
 gateway observations. This prevents a disconnected generator that pauses from making availability
-look artificially perfect.
+look artificially perfect. Because virtual generators free-run through warm-up, short windows can
+have a phase-boundary mismatch; analysis invalidates rather than publishes ratios above one. The
+0.3-second smoke delivery values are not suitable scientific measurements.
 
 Sequence reset detection deliberately uses the smallest Phase 2 mechanism: a node incarnation must
 begin at sequence `0`, and observing `0` after a higher value marks RESET. If that first post-reboot
@@ -343,6 +354,9 @@ Other interpretation constraints:
   summary rather than silently hidden.
 - Gateway metrics describe the gateway process and host. They do not include collector or simulator
   process resource use.
+- Failure injection currently targets `virtual-000`. Its timestamp is captured when cancellation is
+  requested; analysis reports first-SUSPECT and OFFLINE threshold delays separately, with SUSPECT as
+  the primary first-detection metric.
 - Application drop/delay controls are not Wi-Fi packet impairment. The current transport has no
   authentication or TLS and all automated runs are local-host TCP.
 - Physical one-way latency remains unsupported until clock synchronization is verified.

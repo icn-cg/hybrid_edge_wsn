@@ -59,5 +59,6 @@ async def test_simulator_failure_and_recovery_creates_new_incarnation(tmp_path: 
         row = next(csv.DictReader(source))
     summary = json.loads((tmp_path / "simulator.json").read_text())
     assert int(row["incarnations"]) == 2
+    assert summary["failure_node_id"] == "virtual-000"
     assert summary["failure_timestamp_ms"] is not None
     assert summary["recovery_timestamp_ms"] is not None

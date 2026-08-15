@@ -110,6 +110,9 @@ class VirtualNodeSimulator:
                 "measurement_start_ms": measurement_start_ms,
                 "measurement_end_ms": measurement_end_ms,
                 "run_end_ms": run_end_ms,
+                "failure_node_id": (
+                    "virtual-000" if self.failure_at_seconds is not None else None
+                ),
                 "failure_timestamp_ms": self.failure_timestamp_ms,
                 "recovery_timestamp_ms": self.recovery_timestamp_ms,
             },
@@ -135,8 +138,8 @@ class VirtualNodeSimulator:
     async def _failure_sequence(self) -> None:
         assert self.failure_at_seconds is not None
         await asyncio.sleep(self.failure_at_seconds)
-        await self._stop_node("virtual-000")
         self.failure_timestamp_ms = time.time_ns() // 1_000_000
+        await self._stop_node("virtual-000")
         if self.recovery_at_seconds is not None:
             await asyncio.sleep(self.recovery_at_seconds - self.failure_at_seconds)
             self._start_incarnation(0)

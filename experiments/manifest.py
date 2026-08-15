@@ -62,7 +62,7 @@ def build_manifest(
     *,
     repository: str | Path,
 ) -> dict[str, object]:
-    commit, dirty, status = _git_context(Path(repository))
+    commit, dirty, status = git_context(Path(repository))
     return {
         "manifest_schema_version": 1,
         "run_id": run_id,
@@ -85,7 +85,7 @@ def write_json_exclusive(path: str | Path, value: dict[str, object]) -> None:
         output.write("\n")
 
 
-def _git_context(repository: Path) -> tuple[str, bool, list[str]]:
+def git_context(repository: Path) -> tuple[str, bool, list[str]]:
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=repository,

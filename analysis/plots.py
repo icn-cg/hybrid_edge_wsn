@@ -18,7 +18,7 @@ def plot_comparison(frame: pd.DataFrame, experiment_type: str, output_dir: Path)
         _plot(
             frame,
             "node_count",
-            "throughput_readings_per_second",
+            "virtual_unique_throughput_readings_per_second",
             output_dir,
             "throughput_vs_nodes",
         )
@@ -40,16 +40,16 @@ def plot_comparison(frame: pd.DataFrame, experiment_type: str, output_dir: Path)
         _plot(
             frame,
             "aggregation_window_seconds",
-            "collector_bytes_unique",
+            "collector_bytes_actual",
             output_dir,
-            "upstream_bytes_vs_window",
+            "upstream_actual_bytes_vs_window",
         )
         _plot(
             frame,
             "aggregation_window_seconds",
-            "upstream_message_reduction",
+            "upstream_message_reduction_actual",
             output_dir,
-            "upstream_message_reduction_vs_window",
+            "upstream_actual_message_reduction_vs_window",
         )
         _plot(
             frame,
@@ -81,7 +81,7 @@ def plot_comparison(frame: pd.DataFrame, experiment_type: str, output_dir: Path)
             "run_id",
             "failure_detection_time_ms",
             output_dir,
-            "failure_detection_by_run",
+            "failure_suspect_detection_by_run",
         )
 
 
