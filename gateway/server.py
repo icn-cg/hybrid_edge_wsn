@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gateway.protocol import ProtocolError, SensorMessage, parse_message
-from gateway.registry import NodeRegistry, SequenceStatus
+from gateway.registry import HealthTransition, NodeRegistry, SequenceStatus
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
@@ -241,11 +241,17 @@ class GatewayServer:
 
             self.stats.valid_messages += 1
             self.stats.sensor_bytes += wire_bytes
+            existing = self.registry.nodes.get(message.node_id)
+            transition_count = 0 if existing is None else len(existing.transitions)
             sequence_status = self.registry.observe(
                 message,
                 received_at_ms=received_at_ms,
                 received_monotonic_ns=received_monotonic_ns,
             )
+            for transition in self.registry.nodes[message.node_id].transitions[
+                transition_count:
+            ]:
+                self._log_transition(transition)
             if message.node_id not in connection_nodes:
                 connection_nodes.add(message.node_id)
                 self.registry.connection_opened(message.node_id)
@@ -267,7 +273,18 @@ class GatewayServer:
     async def _monitor_liveness(self) -> None:
         while True:
             await asyncio.sleep(self.liveness_check_interval)
-            self.registry.refresh_health()
+            for transition in self.registry.refresh_health():
+                self._log_transition(transition)
+
+    @staticmethod
+    def _log_transition(transition: HealthTransition) -> None:
+        LOGGER.info(
+            "health node=%s previous=%s current=%s timestamp_ms=%d",
+            transition.node_id,
+            transition.previous,
+            transition.current,
+            transition.timestamp_ms,
+        )
 
     @staticmethod
     def _is_reading_candidate(line: bytes) -> bool:
@@ -295,6 +312,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--collector-host", default="127.0.0.1")
     parser.add_argument("--collector-port", type=int, default=9662)
     parser.add_argument("--aggregation-window", type=float, default=5.0)
+    parser.add_argument("--expected-interval", type=float, default=1.0)
+    parser.add_argument("--suspect-after", type=float, default=3.0)
+    parser.add_argument("--offline-after", type=float, default=5.0)
+    parser.add_argument("--liveness-check-interval", type=float, default=0.5)
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
     return parser.parse_args()
 
@@ -342,7 +363,18 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
         if forwarder is not None:
             await forwarder.submit(received)
 
-    gateway = GatewayServer(args.host, args.port, on_message=log_message)
+    registry = NodeRegistry(
+        expected_interval_seconds=args.expected_interval,
+        suspect_after_intervals=args.suspect_after,
+        offline_after_intervals=args.offline_after,
+    )
+    gateway = GatewayServer(
+        args.host,
+        args.port,
+        registry=registry,
+        liveness_check_interval=args.liveness_check_interval,
+        on_message=log_message,
+    )
     await gateway.start()
     try:
         await stop_event.wait()

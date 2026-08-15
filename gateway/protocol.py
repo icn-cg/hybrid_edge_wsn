@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 PROTOCOL_VERSION = 1
 NodeKind = Literal["physical", "virtual"]
@@ -30,6 +30,13 @@ class BaseSensorMessage(BaseModel):
     node_kind: NodeKind
     sequence: int = Field(ge=0)
     timestamp_ms: int = Field(ge=0)
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def version_must_be_json_integer(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("version must be an integer")
+        return value
 
 
 class ReadingMessage(BaseSensorMessage):

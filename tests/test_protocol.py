@@ -144,3 +144,9 @@ def test_infinity_is_rejected() -> None:
 def test_boolean_sequence_is_rejected() -> None:
     with pytest.raises(ProtocolError):
         parse_payload(reading_payload(sequence=True))
+
+
+@pytest.mark.parametrize("version", [True, 1.0], ids=["boolean", "float"])
+def test_protocol_version_requires_json_integer(version: object) -> None:
+    with pytest.raises(ProtocolError):
+        parse_payload(reading_payload(version=version))
