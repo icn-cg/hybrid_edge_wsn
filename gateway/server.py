@@ -287,6 +287,14 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         help="persist validated messages as new NDJSON evidence (refuses overwrite)",
     )
+    parser.add_argument(
+        "--upstream-mode",
+        choices=("disabled", "raw", "aggregated"),
+        default="disabled",
+    )
+    parser.add_argument("--collector-host", default="127.0.0.1")
+    parser.add_argument("--collector-port", type=int, default=9662)
+    parser.add_argument("--aggregation-window", type=float, default=5.0)
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
     return parser.parse_args()
 
@@ -294,6 +302,7 @@ def _parse_args() -> argparse.Namespace:
 async def _run_from_cli(args: argparse.Namespace) -> None:
     # Local import avoids a module cycle: storage records ReceivedMessage metadata.
     from gateway.storage import RawMessageStore
+    from gateway.upstream import ForwardMode, UpstreamForwarder
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -303,6 +312,18 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
     store = RawMessageStore(args.raw_output) if args.raw_output is not None else None
     if store is not None:
         await store.start()
+    forwarder = (
+        UpstreamForwarder(
+            args.collector_host,
+            args.collector_port,
+            mode=ForwardMode(args.upstream_mode),
+            aggregation_window_seconds=args.aggregation_window,
+        )
+        if args.upstream_mode != "disabled"
+        else None
+    )
+    if forwarder is not None:
+        await forwarder.start()
 
     async def log_message(received: ReceivedMessage) -> None:
         message = received.message
@@ -318,6 +339,8 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
         )
         if store is not None:
             await store.submit(received)
+        if forwarder is not None:
+            await forwarder.submit(received)
 
     gateway = GatewayServer(args.host, args.port, on_message=log_message)
     await gateway.start()
@@ -325,6 +348,8 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
         await stop_event.wait()
     finally:
         await gateway.stop()
+        if forwarder is not None:
+            await forwarder.stop()
         if store is not None:
             await store.stop()
 

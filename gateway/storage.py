@@ -6,9 +6,10 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-from gateway.server import ReceivedMessage
+if TYPE_CHECKING:
+    from gateway.server import ReceivedMessage
 
 _STOP = object()
 
@@ -35,9 +36,7 @@ class RawMessageStore:
         self.path = Path(path)
         self.batch_size = batch_size
         self.stats = StorageStats()
-        self._queue: asyncio.Queue[ReceivedMessage | object] = asyncio.Queue(
-            maxsize=queue_size
-        )
+        self._queue: asyncio.Queue[object] = asyncio.Queue(maxsize=queue_size)
         self._worker: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -85,7 +84,10 @@ class RawMessageStore:
                     break
                 batch.append(queued)
 
-            lines = [self._encode_record(received) for received in batch]
+            lines = [
+                self._encode_record(cast("ReceivedMessage", received))
+                for received in batch
+            ]
             bytes_written = await asyncio.to_thread(self._append_lines, lines)
             self.stats.records_written += len(lines)
             self.stats.bytes_written += bytes_written
