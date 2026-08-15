@@ -11,10 +11,13 @@ from gateway.upstream import ForwardMode, UpstreamForwarder
 from gateway.upstream_protocol import AggregateUpstreamRecord, RawUpstreamRecord
 from virtual_nodes.node import VirtualNode, VirtualNodeConfig
 
-BASE_MONOTONIC_NS = time.monotonic_ns()
 
-
-def received(node_id: str, sequence: int) -> ReceivedMessage:
+def received(
+    node_id: str,
+    sequence: int,
+    *,
+    received_monotonic_ns: int | None = None,
+) -> ReceivedMessage:
     return ReceivedMessage(
         message=ReadingMessage(
             type="reading",
@@ -28,10 +31,24 @@ def received(node_id: str, sequence: int) -> ReceivedMessage:
             pressure_hpa=1000.0 + sequence,
         ),
         received_at_ms=2_000 + sequence,
-        received_monotonic_ns=BASE_MONOTONIC_NS + sequence,
+        received_monotonic_ns=(
+            time.monotonic_ns()
+            if received_monotonic_ns is None
+            else received_monotonic_ns
+        ),
         wire_bytes=180,
         sequence_status=(SequenceStatus.FIRST if sequence == 0 else SequenceStatus.IN_ORDER),
     )
+
+
+def test_received_fixture_uses_call_time_or_explicit_monotonic_timestamp() -> None:
+    before = time.monotonic_ns()
+    fresh = received("virtual-fresh", 0)
+    after = time.monotonic_ns()
+    controlled = received("virtual-controlled", 0, received_monotonic_ns=123)
+
+    assert before <= fresh.received_monotonic_ns <= after
+    assert controlled.received_monotonic_ns == 123
 
 
 async def wait_until(predicate, timeout: float = 1.0) -> None:
@@ -288,7 +305,7 @@ async def test_heartbeats_are_not_forwarded() -> None:
             timestamp_ms=1_001,
         ),
         received_at_ms=2_001,
-        received_monotonic_ns=BASE_MONOTONIC_NS + 1,
+        received_monotonic_ns=time.monotonic_ns(),
         wire_bytes=80,
         sequence_status=SequenceStatus.IN_ORDER,
     )
