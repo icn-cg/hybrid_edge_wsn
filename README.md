@@ -4,19 +4,20 @@ A graduate Wireless Sensor Networks project for experimentally studying how edge
 changes bandwidth use, latency, and reliability as a hybrid network scales and communication
 degrades.
 
-The current implementation is **Phase 2: edge behavior**. It provides a versioned sensor protocol,
-a concurrent gateway, per-node sequence and health tracking, lossless raw persistence, windowed
-aggregation, a reconnecting upstream forwarder, an independent collector, seeded virtual nodes,
-and automated end-to-end tests. Experiment orchestration, analysis, and ESP32 firmware remain
-future phases.
+The current implementation is **Phase 3: reproducible virtual experiments**. It provides a
+versioned sensor protocol, concurrent gateway and collector, immutable run manifests, persisted
+health/gateway events, independently accounted virtual generation, CPU/memory sampling,
+subprocess orchestration, and evidence-driven analysis. ESP32 firmware and physical hardware
+integration remain future work.
 
 ## Research question
 
 > How does edge aggregation affect bandwidth usage, latency, and reliability as a hybrid
 > wireless sensor network scales and experiences degraded network conditions?
 
-Secondary measurements planned for Phase 3 include gateway CPU/memory use, aggregation-window
-tradeoffs, failure/recovery detection time, and controlled communication impairment.
+The testbed can measure gateway CPU/memory use, aggregation-window tradeoffs, failure/recovery
+detection time, and controlled application-level impairment. No final scientific experiment matrix
+or conclusions have been produced.
 
 ## Architecture
 
@@ -59,6 +60,15 @@ reduces traffic across a real second TCP connection rather than only reducing ro
   bounded shutdown while the collector remains unavailable.
 - Seeded virtual readings with baseline, slow drift, noise, reconnection, artificial delay, and
   application-message suppression controls in the Python API.
+- One subprocess-orchestrated command for collector, gateway, and many independently connected
+  virtual nodes over real localhost TCP connections.
+- Exclusive per-run evidence directories with automatically captured Git/configuration/seed context.
+- Persisted health transitions, gateway/forwarder events, node-side accounting, process/system
+  metrics, component summaries, and logs.
+- Warm-up-separated measurement intervals, deterministic repetitions, configurable
+  failure/recovery, and application-level impairment.
+- Analysis that preserves raw files, deduplicates collector records by `record_id`, derives metrics,
+  rejects incompatible comparisons, and creates experiment-specific plots.
 
 Synthetic readings are always labeled `"node_kind":"virtual"` and must not be presented as
 physical measurements.
@@ -104,7 +114,91 @@ python -m pip install -r requirements.txt
 
 Substitute another Python 3.12+ executable if `python3.13` is unavailable.
 
-## Run RAW mode end to end
+## Run a reproducible experiment
+
+One command starts an independent collector process, gateway process, and one simulator process
+that owns the requested number of independently connected virtual nodes:
+
+```bash
+source .venv/bin/activate
+python -m experiments.run \
+  --experiment scaling \
+  --nodes 50 \
+  --duration 60 \
+  --warmup 5 \
+  --sampling-interval-ms 1000 \
+  --aggregation raw \
+  --seed 662
+```
+
+Every repetition receives a new directory under `results/raw/<run-id>/`; existing runs are never
+overwritten. The runner chooses available localhost ports, captures the resolved ports and all
+validated settings automatically, and writes:
+
+```text
+manifest.json             immutable configuration, Git, Python, and host context
+readings.ndjson            validated gateway input with receive metadata
+upstream.ndjson            collector input, including any at-least-once duplicates
+health_events.csv          ONLINE/SUSPECT/OFFLINE transitions
+gateway_events.csv         protocol, sequence, connection, and forwarder events
+system_metrics.csv         sampled gateway CPU/RSS/VMS and host CPU
+node_stats.csv             scheduled/generated/attempted/written/dropped counts
+simulator_summary.json     run and measurement boundaries; failure/recovery times
+gateway_summary.json       final gateway, registry, queue, event, and metrics counters
+collector_summary.json     final collector counters
+run_summary.json           overall status, child exits, config, and component summaries
+*.log                      one diagnostic log per subprocess
+```
+
+Repeat trials with `--repetitions 3`. Seeds are deterministic: repetition `i` uses
+`base_seed + i`, so a base of 662 produces 662, 663, and 664, each recorded in its manifest.
+
+Supported experiment families are:
+
+- `scaling`: vary `--nodes` (the planned matrix is 5, 10, 25, 50, 100).
+- `aggregation`: use `--aggregation raw` or a positive window in seconds, such as
+  `--aggregation 1`, `5`, or `10`.
+- `failure`: set `--failure-at` and optional `--recovery-at`, relative to measurement start. If
+  omitted, the runner uses one-third and two-thirds of the measurement duration.
+- `impairment`: set `--drop-probability` and/or `--artificial-delay-ms`. These controls suppress or
+  delay application messages; they do not emulate or measure Wi-Fi packet loss.
+
+Warm-up traffic is preserved as raw evidence, but normal analysis uses only the recorded
+`measurement_start_ms` through `measurement_end_ms` interval.
+
+## Analyze immutable evidence
+
+Analyze one run without modifying its raw files:
+
+```bash
+python -m analysis.analyze results/raw/<run-id>
+```
+
+Analyze compatible runs of one family and create supported comparison plots:
+
+```bash
+python -m analysis.analyze --experiment scaling
+python -m analysis.analyze --experiment aggregation
+```
+
+Per-run derived data goes to `results/processed/<run-id>/`; comparisons go to
+`results/processed/comparison-<experiment>/`; figures go to
+`results/figures/<experiment>/`. Outputs use exclusive creation so an earlier analysis is not
+silently replaced.
+
+Analysis derives scheduled/generation/send/gateway reliability ratios, sequence status counts,
+throughput, local virtual-node latency, gateway CPU/memory, unique collector messages and exact
+NDJSON application bytes, RAW baselines and reductions, information delay, and failure/recovery
+metrics. It deduplicates collector records by `record_id` only in processed data. It rejects absent
+or unsupported manifests and incompatible comparison dimensions, and warns when evidence came from
+a dirty Git tree or experienced forwarding-queue drops.
+
+## Manual component operation
+
+The orchestrated runner is preferred for evidence. The commands below remain useful for debugging
+components individually.
+
+### Run RAW mode end to end
 
 Use a new directory or filenames for each run. Both services refuse to overwrite existing evidence.
 
@@ -152,7 +246,7 @@ python -m virtual_nodes.node \
 node SUSPECT after three expected intervals and OFFLINE after five. Keep the liveness-check interval
 shorter than the time between those thresholds if both transitions must be observed.
 
-## Run AGGREGATED mode
+### Run AGGREGATED mode
 
 Start the collector as above with a new output path, then replace the gateway mode and output path:
 
@@ -188,11 +282,12 @@ python -m pytest -q
 ruff check .
 ```
 
-The current suite has 63 passing tests. Coverage includes protocol edge cases, framing boundaries,
-malformed and abrupt clients, idle/size limits, callback isolation, 10 concurrent virtual nodes,
-reconnection, sequence classification, liveness transitions, exclusive raw persistence,
-aggregation statistics/window behavior, collector outage/recovery, bounded shutdown, and complete
-virtual-node → gateway → collector RAW and AGGREGATED flows.
+The current suite has 90 passing tests. Coverage includes protocol and framing edge cases, malformed
+and abrupt clients, idle/size limits, callback isolation, concurrent virtual nodes, reconnection,
+sequence and liveness transitions, exclusive persistence, aggregation statistics, collector
+outage/recovery, bounded shutdown, event/metrics persistence, manifest Git-state capture, node-side
+accounting, successful/failed/interrupted/repeated runs, analysis safeguards, and complete RAW and
+AGGREGATED flows.
 
 ## Clock and latency methodology
 
@@ -215,21 +310,42 @@ Firmware will use PlatformIO/C++, never Arduino IDE. Local
 
 ## Experiments and results status
 
-No scientific experiments have been run and there are no findings yet. Phase 3 will add a
-configuration-driven runner that creates one immutable directory per run, preserving configuration,
-seed, Git commit, readings, upstream records, node events, gateway events, and system metrics.
-Analysis will consume those files directly.
+No scientific experiment matrix has been run and there are no findings yet. Short 10-, 50-, and
+100-node RAW runs plus a matched 10-node RAW/aggregated pair have exercised the Phase 3 pipeline.
+They are engineering smoke tests only: their 0.3-second measurement windows, same-host networking,
+and dirty manifests are unsuitable for research conclusions. Generated data remains ignored by Git.
 
-Application-message suppression is not physical Wi-Fi packet loss. A virtual node currently pauses
-generation while disconnected, so availability during connection outages must be derived from the
-configured rate and elapsed time rather than only `received / generated`. Physical and synthetic
-measurements will remain explicitly separated.
+The scheduled denominator is defined independently as
+`floor(measurement_duration / configured_interval)` per virtual node. Node statistics separately
+record samples generated, sends attempted, application writes completed, application drops, and
+gateway observations. This prevents a disconnected generator that pauses from making availability
+look artificially perfect.
 
 Sequence reset detection deliberately uses the smallest Phase 2 mechanism: a node incarnation must
 begin at sequence `0`, and observing `0` after a higher value marks RESET. If that first post-reboot
 application message is never observed, later low values remain OUT_OF_ORDER. TCP provides ordered,
 reliable delivery after connection establishment, and future firmware must send sequence `0` first;
 an explicit boot/incarnation identifier is deferred unless physical testing proves it necessary.
+
+Other interpretation constraints:
+
+- `estimated_messages_missing` is a gap estimate and does not shrink if a late message arrives.
+- Aggregates are per reading, not per node. Use equal sampling rates when interpreting means.
+- Duplicate readings remain in RAW evidence but are excluded from aggregate statistics. Collector
+  evidence remains at-least-once and is deduplicated by `record_id` only during analysis.
+- Empty aggregation windows are not emitted; collector silence does not mean zero sensor readings.
+- Concurrent callbacks can make receive order within a window non-monotonic. Window timestamps are
+  traffic boundaries, not environmental event-time claims.
+- A repeated `node_id` can currently change `node_kind`; controlled runs must keep identity stable.
+- Physical and virtual readings may share an aggregate. Do not publish environmental means that
+  combine synthetic and physical measurements.
+- Event persistence uses large bounded queues. Any event-row drops are exposed in the gateway
+  summary rather than silently hidden.
+- Gateway metrics describe the gateway process and host. They do not include collector or simulator
+  process resource use.
+- Application drop/delay controls are not Wi-Fi packet impairment. The current transport has no
+  authentication or TLS and all automated runs are local-host TCP.
+- Physical one-way latency remains unsupported until clock synchronization is verified.
 
 ## Repository structure
 
@@ -239,6 +355,8 @@ gateway/
   server.py             bounded sensor-facing gateway and CLI
   registry.py           sequence, connection, and liveness state
   storage.py            asynchronous lossless raw persistence
+  events.py             bounded structured event persistence
+  metrics.py            asynchronous CPU and memory sampling
   aggregator.py         pure window aggregation
   upstream_protocol.py  RAW/AGGREGATED collector protocol
   upstream.py           queued reconnecting collector forwarder
@@ -246,23 +364,28 @@ collector/
   server.py             independent upstream collector and CLI
 virtual_nodes/
   node.py               seeded synthetic sensor and CLI
+  simulator.py          multi-node accounting and failure/recovery control
+experiments/
+  config.py             frozen validated experiment configuration
+  manifest.py           immutable artifacts and automatic run context
+  run.py                subprocess experiment orchestration
+analysis/
+  analyze.py            evidence loading, safeguards, and derived metrics
+  plots.py              experiment-specific matplotlib figures
 tests/                   unit and TCP integration tests
 firmware/                Phase 5 placeholders
-experiments/             Phase 3 placeholders
-analysis/                Phase 3 placeholders
-results/                 future experiment evidence and derived outputs
+results/                 ignored raw/processed/figure outputs plus tracked markers
 requirements.txt         pinned Python dependencies
 pyproject.toml           pytest and Ruff configuration
 ```
 
 ## Current limitations and next milestone
 
-Phase 2 has no authentication/TLS, experiment manifest, system-resource sampler, automatic repeated
-trials, analysis pipeline, or physical firmware. Registry and transition state are currently held in
-memory; Phase 3 will persist transition/event streams as part of each configured run. Upstream
-delivery reconnects with at-least-once intent, so record IDs are included to reveal possible
-retransmission duplicates rather than hiding them.
+Phase 3 is ready for a Raspberry Pi software deployment rehearsal: the gateway and runner are
+configuration-driven, evidence is immutable, and local RAW/aggregated load smokes pass. It is not
+yet validated on Raspberry Pi hardware, across real Wi-Fi, or against physical clocks and sensors.
 
-The next milestone is Phase 3: configuration-driven experiments, immutable run directories,
-system metrics, repeated runs, and automated analysis. Firmware and Raspberry Pi deployment should
-wait until that local experiment pipeline is reproducible.
+The next milestone is a controlled Pi deployment and then ESP32/BME280 firmware using the existing
+version-1 protocol. Hardware integration, secrets, clock methodology, and real network impairment
+must be validated before the final experiment matrix. This repository does not yet claim that ESP32
+firmware is implemented or that physical experimental results are available.

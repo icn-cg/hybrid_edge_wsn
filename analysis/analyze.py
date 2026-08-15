@@ -12,7 +12,6 @@ from typing import Any
 
 import pandas as pd
 
-from analysis.plots import plot_comparison
 from experiments.manifest import write_json_exclusive
 from gateway.protocol import ReadingMessage
 from gateway.registry import SequenceStatus
@@ -214,6 +213,8 @@ def analyze_experiment(
     processed_root: str | Path = DEFAULT_PROCESSED_ROOT,
     figures_root: str | Path = DEFAULT_FIGURES_ROOT,
 ) -> Path:
+    from analysis.plots import plot_comparison
+
     run_dirs = []
     for manifest_path in Path(raw_root).glob("*/manifest.json"):
         manifest = json.loads(manifest_path.read_text())
@@ -240,16 +241,29 @@ def analyze_experiment(
 
 
 def _validate_comparison(manifests: list[dict[str, Any]], experiment_type: str) -> None:
+    common_dimensions = (
+        "duration_seconds",
+        "warmup_seconds",
+        "physical_node_count",
+        "expected_interval_seconds",
+        "suspect_after_intervals",
+        "offline_after_intervals",
+        "forwarder_queue_size",
+        "storage_queue_size",
+        "event_queue_size",
+    )
     comparison_dimensions = {
         "scaling": (
             "aggregation_mode",
             "aggregation_window_seconds",
+            "impairment_mode",
             "drop_probability",
             "artificial_delay_ms",
             "sampling_interval_ms",
         ),
         "aggregation": (
             "node_count",
+            "impairment_mode",
             "drop_probability",
             "artificial_delay_ms",
             "sampling_interval_ms",
@@ -268,10 +282,12 @@ def _validate_comparison(manifests: list[dict[str, Any]], experiment_type: str) 
             "impairment_mode",
             "drop_probability",
             "artificial_delay_ms",
+            "failure_at_seconds",
+            "recovery_at_seconds",
         ),
     }
     try:
-        dimensions = comparison_dimensions[experiment_type]
+        dimensions = common_dimensions + comparison_dimensions[experiment_type]
     except KeyError as exc:
         raise AnalysisError(f"unsupported experiment type: {experiment_type}") from exc
     for dimension in dimensions:
@@ -279,6 +295,14 @@ def _validate_comparison(manifests: list[dict[str, Any]], experiment_type: str) 
         if len(values) > 1:
             raise AnalysisError(
                 f"incompatible {experiment_type} runs differ in {dimension}: {values}"
+            )
+    if experiment_type == "impairment":
+        drop_values = {manifest.get("drop_probability") for manifest in manifests}
+        delay_values = {manifest.get("artificial_delay_ms") for manifest in manifests}
+        if len(drop_values) > 1 and len(delay_values) > 1:
+            raise AnalysisError(
+                "impairment comparison varies both drop_probability and "
+                "artificial_delay_ms; analyze one dimension at a time"
             )
 
 

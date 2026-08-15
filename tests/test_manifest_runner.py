@@ -28,16 +28,46 @@ def config(**overrides) -> ExperimentConfig:
     return ExperimentConfig(**values)
 
 
-def test_manifest_captures_real_git_commit_and_config(tmp_path: Path) -> None:
-    manifest = build_manifest(config(), "test-run", repository=Path.cwd())
+def git(repository: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_manifest_captures_real_git_commit_dirty_state_and_config(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    git(repository, "init")
+    git(repository, "config", "user.name", "Phase Three Test")
+    git(repository, "config", "user.email", "phase3@example.invalid")
+    (repository / "tracked.txt").write_text("evidence\n")
+    git(repository, "add", "tracked.txt")
+    git(repository, "commit", "-m", "test fixture")
+
+    manifest = build_manifest(config(), "test-run", repository=repository)
     expected = subprocess.run(
-        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
     assert manifest["git_commit"] == expected
-    assert isinstance(manifest["git_dirty"], bool)
+    assert manifest["git_dirty"] is False
     assert manifest["node_count"] == 2
     assert manifest["random_seed"] == 662
+
+    (repository / "untracked.txt").write_text("dirty\n")
+    dirty_manifest = build_manifest(config(), "dirty-run", repository=repository)
+    assert dirty_manifest["git_dirty"] is True
+    assert dirty_manifest["git_status"] == ["?? untracked.txt"]
 
 
 def test_unique_run_directory_and_exclusive_manifest(tmp_path: Path) -> None:
@@ -57,6 +87,7 @@ async def test_short_runner_run_produces_complete_evidence(tmp_path: Path) -> No
     summary = json.loads(artifacts.run_summary.read_text())
     manifest = json.loads(artifacts.manifest.read_text())
     assert summary["status"] == "complete"
+    assert set(summary["children"].values()) == {0}
     assert manifest["git_commit"]
     for path in (
         artifacts.readings,

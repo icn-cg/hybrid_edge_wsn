@@ -59,13 +59,22 @@ def plot_comparison(frame: pd.DataFrame, experiment_type: str, output_dir: Path)
             "information_delay_vs_window",
         )
     elif experiment_type == "impairment":
-        _plot(
-            frame,
-            "drop_probability",
-            "delivery_ratio",
-            output_dir,
-            "delivery_vs_application_drop",
-        )
+        if frame["drop_probability"].nunique() > 1:
+            _plot(
+                frame,
+                "drop_probability",
+                "delivery_ratio",
+                output_dir,
+                "delivery_vs_application_drop",
+            )
+        elif frame["artificial_delay_ms"].nunique() > 1:
+            _plot(
+                frame,
+                "artificial_delay_ms",
+                "delivery_ratio",
+                output_dir,
+                "delivery_vs_application_delay",
+            )
     elif experiment_type == "failure":
         _plot(
             frame,

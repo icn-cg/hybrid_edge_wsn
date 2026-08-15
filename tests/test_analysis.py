@@ -197,3 +197,31 @@ def test_mixed_scaling_configuration_is_not_silently_combined() -> None:
 
     with pytest.raises(AnalysisError, match="aggregation_mode"):
         _validate_comparison([base, incompatible], "scaling")
+
+    different_duration = {**base, "duration_seconds": 60}
+    with pytest.raises(AnalysisError, match="duration_seconds"):
+        _validate_comparison(
+            [{**base, "duration_seconds": 30}, different_duration], "scaling"
+        )
+
+
+def test_impairment_analysis_changes_only_one_dimension() -> None:
+    base = {
+        "node_count": 10,
+        "aggregation_mode": "raw",
+        "aggregation_window_seconds": 0,
+        "sampling_interval_ms": 100,
+    }
+    both_changed = {
+        **base,
+        "drop_probability": 0.2,
+        "artificial_delay_ms": 10,
+    }
+    with pytest.raises(AnalysisError, match="one dimension at a time"):
+        _validate_comparison(
+            [
+                {**base, "drop_probability": 0, "artificial_delay_ms": 0},
+                both_changed,
+            ],
+            "impairment",
+        )
