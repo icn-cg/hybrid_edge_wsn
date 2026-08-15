@@ -13,6 +13,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 
 from gateway.protocol import ProtocolError, SensorMessage, parse_message
 from gateway.registry import NodeRegistry, SequenceStatus
@@ -281,17 +282,29 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the hybrid WSN edge gateway")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--raw-output",
+        type=Path,
+        help="persist validated messages as new NDJSON evidence (refuses overwrite)",
+    )
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
     return parser.parse_args()
 
 
 async def _run_from_cli(args: argparse.Namespace) -> None:
+    # Local import avoids a module cycle: storage records ReceivedMessage metadata.
+    from gateway.storage import RawMessageStore
+
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
 
-    def log_message(received: ReceivedMessage) -> None:
+    store = RawMessageStore(args.raw_output) if args.raw_output is not None else None
+    if store is not None:
+        await store.start()
+
+    async def log_message(received: ReceivedMessage) -> None:
         message = received.message
         LOGGER.info(
             "received node=%s type=%s sequence=%d status=%s "
@@ -303,6 +316,8 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
             received.received_at_ms,
             received.wire_bytes,
         )
+        if store is not None:
+            await store.submit(received)
 
     gateway = GatewayServer(args.host, args.port, on_message=log_message)
     await gateway.start()
@@ -310,6 +325,8 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
         await stop_event.wait()
     finally:
         await gateway.stop()
+        if store is not None:
+            await store.stop()
 
 
 def main() -> None:
