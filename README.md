@@ -4,11 +4,12 @@ A graduate Wireless Sensor Networks project for experimentally studying how edge
 changes bandwidth use, latency, and reliability as a hybrid network scales and communication
 degrades.
 
-The current implementation is **Phase 3: reproducible virtual experiments**. It provides a
+The current implementation is **Phase 4: one physical-node firmware preparation**. It provides a
 versioned sensor protocol, concurrent gateway and collector, immutable run manifests, persisted
 health/gateway events, independently accounted virtual generation, CPU/memory sampling,
-subprocess orchestration, and evidence-driven analysis. ESP32 firmware and physical hardware
-integration remain future work.
+subprocess orchestration, evidence-driven analysis, a real Raspberry Pi software rehearsal, and
+host-tested ESP32/BME280 firmware logic. Board-specific building, wiring, and flashing have not
+started.
 
 ## Research question
 
@@ -22,11 +23,11 @@ or conclusions have been produced.
 ## Architecture
 
 ```text
-Physical nodes (future)                         Mac upstream collector
+Physical node (prepared; not flashed)           Mac upstream collector
 BME280 -> ESP32 -- Wi-Fi/TCP --+                         ^
                                |                         | TCP/NDJSON
 Virtual nodes -- TCP ----------+-> Raspberry Pi gateway-+
-       (implemented)                 (runs on macOS now)
+       (implemented)                    (wsn-edge)
                                       validation
                                       registry/health
                                       raw persistence
@@ -69,6 +70,9 @@ reduces traffic across a real second TCP connection rather than only reducing ro
   failure/recovery, and application-level impairment.
 - Analysis that preserves raw files, deduplicates collector records by `record_id`, derives metrics,
   rejects incompatible comparisons, and creates experiment-specific plots.
+- Real Mac → Raspberry Pi → Mac RAW and AGGREGATED engineering rehearsals over LAN TCP.
+- Board-independent physical-node NDJSON, validation, sequence, and reconnect-backoff logic with
+  host tests, plus a minimal Arduino BME280/Wi-Fi/persistent-TCP state machine awaiting board ID.
 
 Synthetic readings are always labeled `"node_kind":"virtual"` and must not be presented as
 physical measurements.
@@ -101,10 +105,10 @@ They are not TCP/IP packet counts or physical-layer measurements.
 
 ## Requirements and setup
 
-- Python 3.12 or newer (validated with Python 3.13.13)
+- Python 3.12 or newer (validated with Python 3.13.13 on Mac and 3.13.5 on Raspberry Pi)
 - macOS or Linux for local development
 - Git
-- PlatformIO and ESP32/BME280 hardware are not required until Phase 5
+- PlatformIO is required for the eventual Phase 4 board build; the Python system does not require it
 
 ```bash
 python3.13 -m venv .venv
@@ -291,31 +295,72 @@ python -m pytest -q
 ruff check .
 ```
 
-The current suite has 100 passing tests. Coverage includes protocol and framing edge cases, malformed
-and abrupt clients, idle/size limits, callback isolation, concurrent virtual nodes, reconnection,
-sequence and liveness transitions, exclusive persistence, aggregation statistics, collector
-outage/recovery, bounded shutdown, event/metrics persistence, manifest Git-state capture, node-side
-accounting, successful/failed/interrupted/repeated runs, analysis safeguards, and complete RAW and
-AGGREGATED flows.
+The current Python suite has 101 passing tests. Coverage includes protocol and framing edge cases,
+malformed and abrupt clients, idle/size limits, callback isolation, concurrent virtual nodes,
+reconnection, sequence and liveness transitions, exclusive persistence, aggregation statistics,
+collector outage/recovery, bounded shutdown, event/metrics persistence, manifest Git-state capture,
+node-side accounting, successful/failed/interrupted/repeated runs, analysis safeguards, and complete
+RAW and AGGREGATED flows.
 
 ## Clock and latency methodology
 
-Sensor messages carry a sender wall-clock timestamp. The gateway records wall-clock and monotonic
-receive times at its validation boundary; the collector does the same at its boundary. Same-host
-virtual-node tests can derive one-way application latency under a common wall clock. Gateway-local
-durations and liveness use monotonic time.
+Virtual sensor messages carry a sender wall-clock timestamp. The Phase 4 physical firmware instead
+uses monotonic milliseconds since ESP32 boot because NTP and clock synchronization are not yet part
+of the system. The gateway records wall-clock and monotonic receive times at its validation boundary;
+the collector does the same at its boundary. Same-host virtual-node tests can derive one-way
+application latency under a common wall clock. Gateway-local durations and liveness use monotonic
+time.
 
-Physical one-way latency will only be reported after explicit clock synchronization or will be
-labeled approximate. Round-trip measurements are preferred where synchronized ESP32, Pi, and Mac
-clocks cannot be verified. An aggregation record includes window start/end and forwarding time so
-the aggregation delay is not hidden.
+Physical one-way latency will not be reported until explicit clock synchronization is implemented
+and verified. Round-trip measurements are preferred where synchronized ESP32, Pi, and Mac clocks
+cannot be verified. An aggregation record includes window start/end and forwarding time so the
+aggregation delay is not hidden.
 
 ## Hardware and PlatformIO status
 
-The planned physical deployment is three ESP32 nodes with BME280 sensors over Wi-Fi to a Raspberry
-Pi gateway. `firmware/` remains an initialization placeholder and is not claimed as runnable.
-Firmware will use PlatformIO/C++, never Arduino IDE. Local
-`firmware/include/secrets.hpp` is ignored by Git; a documented example will be added with firmware.
+Phase 4 prepares one node, `physical-001`, using PlatformIO with the Arduino framework, the Adafruit
+BME280 library, Wi-Fi, and persistent TCP/NDJSON. Pure encoding, validation, sequence, configuration,
+and backoff behavior is host tested. See [firmware/README.md](firmware/README.md) for the exact
+contract and configuration.
+
+The exact ESP32 board and BME280 breakout are not yet identified. Therefore no PlatformIO board ID,
+GPIO wiring, board build, flash, or hardware claim has been invented. Stop and identify both modules
+before connecting wires. Bring-up must then proceed in these stages:
+
+### Stage A — sensor only
+
+1. Confirm the breakout supply requirements and the ESP32's exact SDA/SCL GPIOs.
+2. Connect power, ground, SDA, and SCL only after that mapping is known.
+3. Flash the confirmed board environment and monitor Serial at 115200 baud.
+4. Require BME280 detection at `0x76` or `0x77` and plausible temperature, humidity, and pressure.
+5. Do not involve the Pi until this stage passes.
+
+### Stage B — Wi-Fi only
+
+1. Create ignored `firmware/include/secrets.hpp` from the committed example.
+2. Verify the ESP32 joins the intended LAN and prints its assigned IP without printing credentials.
+3. Interrupt and restore Wi-Fi; verify bounded reconnect without a reboot loop.
+
+### Stage C — TCP
+
+1. Check the Pi's current address in `firmware/include/config.hpp`; DHCP may change it.
+2. Run the gateway on `wsn-edge` port 8662.
+3. Verify one persistent ESP32 connection, `physical-001`, and zero schema rejections.
+
+### Stage D — end to end
+
+1. Run the Mac collector and Pi gateway in RAW mode.
+2. Verify sequence `0`, then in-order values, `node_kind:"physical"`, and persisted BME280 values.
+3. Verify RAW forwarding and collector receipt before trying aggregation.
+
+### Stage E — failure and recovery
+
+1. Remove ESP32 power and observe Pi transitions ONLINE → SUSPECT → OFFLINE.
+2. Restore power and require Wi-Fi/TCP reconnect plus sequence `0`.
+3. Verify RESET classification, ONLINE recovery, and later in-order sequences.
+
+Do not flash or wire from this document until the exact hardware identification fields above are
+filled in.
 
 ## Experiments and results status
 
@@ -332,11 +377,19 @@ look artificially perfect. Because virtual generators free-run through warm-up, 
 have a phase-boundary mismatch; analysis invalidates rather than publishes ratios above one. The
 0.3-second smoke delivery values are not suitable scientific measurements.
 
+A real multi-machine software rehearsal has also completed over the LAN: Mac virtual node →
+Raspberry Pi `wsn-edge` gateway → Mac collector. RAW preserved and forwarded 10 of 10 readings with
+4,405 matching application bytes; AGGREGATED preserved 10 readings and forwarded two aggregates
+with 1,063 matching application bytes. Both had zero queue drops, send failures, or abandonment, and
+the RAW rehearsal observed ONLINE → SUSPECT → OFFLINE. These validate deployment plumbing only and
+are not scientific results or wireless-performance measurements.
+
 Sequence reset detection deliberately uses the smallest Phase 2 mechanism: a node incarnation must
 begin at sequence `0`, and observing `0` after a higher value marks RESET. If that first post-reboot
 application message is never observed, later low values remain OUT_OF_ORDER. TCP provides ordered,
-reliable delivery after connection establishment, and future firmware must send sequence `0` first;
-an explicit boot/incarnation identifier is deferred unless physical testing proves it necessary.
+reliable delivery after connection establishment, and the prepared firmware preserves sequence `0`
+until its first complete local write; an explicit boot/incarnation identifier is deferred unless
+physical testing proves it necessary.
 
 Other interpretation constraints:
 
@@ -358,7 +411,8 @@ Other interpretation constraints:
   requested; analysis reports first-SUSPECT and OFFLINE threshold delays separately, with SUSPECT as
   the primary first-detection metric.
 - Application drop/delay controls are not Wi-Fi packet impairment. The current transport has no
-  authentication or TLS and all automated runs are local-host TCP.
+  authentication or TLS; configured experiment runs remain local-host TCP, while the separate Pi
+  rehearsal validated only LAN deployment plumbing.
 - Physical one-way latency remains unsupported until clock synchronization is verified.
 
 ## Repository structure
@@ -387,7 +441,7 @@ analysis/
   analyze.py            evidence loading, safeguards, and derived metrics
   plots.py              experiment-specific matplotlib figures
 tests/                   unit and TCP integration tests
-firmware/                Phase 5 placeholders
+firmware/                Phase 4 one-node firmware preparation and host tests
 results/                 ignored raw/processed/figure outputs plus tracked markers
 requirements.txt         pinned Python dependencies
 pyproject.toml           pytest and Ruff configuration
@@ -395,11 +449,11 @@ pyproject.toml           pytest and Ruff configuration
 
 ## Current limitations and next milestone
 
-Phase 3 is ready for a Raspberry Pi software deployment rehearsal: the gateway and runner are
-configuration-driven, evidence is immutable, and local RAW/aggregated load smokes pass. It is not
-yet validated on Raspberry Pi hardware, across real Wi-Fi, or against physical clocks and sensors.
+The Raspberry Pi software path is validated as an engineering rehearsal. The Phase 4 source is
+prepared but cannot be built honestly until the exact ESP32 PlatformIO board ID is known, and it
+cannot be wired until the exact breakout voltage and pin labels are confirmed.
 
-The next milestone is a controlled Pi deployment and then ESP32/BME280 firmware using the existing
-version-1 protocol. Hardware integration, secrets, clock methodology, and real network impairment
-must be validated before the final experiment matrix. This repository does not yet claim that ESP32
-firmware is implemented or that physical experimental results are available.
+The next action is hardware identification, followed by the staged bring-up above. Clock
+synchronization, real network impairment, multiple physical nodes, and the final experiment matrix
+remain later work. This repository does not claim a successful ESP32 build, flash, BME280 reading,
+physical performance result, or physical one-way latency.

@@ -9,6 +9,7 @@ __pycache__/
 
 # Local device and network secrets must never be committed.
 firmware/include/secrets.hpp
+firmware/.pio/
 
 # Generated experiment data is introduced in Phase 3. Keep directory markers.
 results/raw/*
