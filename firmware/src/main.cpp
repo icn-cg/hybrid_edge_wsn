@@ -27,6 +27,7 @@ WiFiClient gateway_client;
 hybrid_wsn::SequenceCounter sequence_counter;
 
 bool sensor_ready = false;
+bool i2c_ready = false;
 bool configuration_ready = false;
 bool network_ready = false;
 bool wifi_attempt_active = false;
@@ -270,10 +271,22 @@ void setup() {
     }
     configuration_ready = true;
 
-    Wire.begin();
-    sensor_ready = initialize_sensor();
-    if (!sensor_ready) {
+    Serial.printf(
+        "Initializing I2C: SDA=GPIO%d SCL=GPIO%d\n",
+        node_config::I2C_SDA_PIN,
+        node_config::I2C_SCL_PIN);
+    i2c_ready = Wire.begin(node_config::I2C_SDA_PIN, node_config::I2C_SCL_PIN);
+    if (i2c_ready) {
+        Serial.println("I2C initialized");
+        sensor_ready = initialize_sensor();
+    } else {
+        Serial.println("I2C initialization failed; BME280 reads are disabled");
+    }
+    if (i2c_ready && !sensor_ready) {
         next_sensor_attempt_ms = uptime_ms() + node_config::SENSOR_RETRY_MS;
+    }
+    if (!sensor_ready) {
+        Serial.println("Sensor unavailable: networking may continue; no readings will be emitted");
     }
     if (secrets_configured()) {
         network_ready = true;
@@ -292,13 +305,11 @@ void loop() {
         delay(1000);
         return;
     }
-    if (!sensor_ready) {
+    if (i2c_ready && !sensor_ready) {
         if (now_ms >= next_sensor_attempt_ms) {
             sensor_ready = initialize_sensor();
             next_sensor_attempt_ms = now_ms + node_config::SENSOR_RETRY_MS;
         }
-        delay(10);
-        return;
     }
 
     if (network_ready) {
