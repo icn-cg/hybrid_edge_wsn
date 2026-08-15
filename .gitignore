@@ -1,0 +1,18 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# Local device and network secrets must never be committed.
+firmware/include/secrets.hpp
+
+# Generated experiment data is introduced in Phase 3. Keep directory markers.
+results/raw/*
+!results/raw/.gitkeep
+results/processed/*
+!results/processed/.gitkeep
+results/figures/*
+!results/figures/.gitkeep
