@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from gateway.protocol import SensorMessage
 from gateway.server import GatewayServer, ReceivedMessage
 from virtual_nodes.node import VirtualNode, VirtualNodeConfig
@@ -163,3 +165,9 @@ async def wait_until(predicate, timeout: float = 1.0) -> None:
             await asyncio.sleep(0.001)
 
     await asyncio.wait_for(poll(), timeout=timeout)
+
+
+@pytest.mark.parametrize("node_id", ["virtual 001", "-bad", "a" * 65])
+def test_config_rejects_invalid_protocol_node_id_early(node_id: str) -> None:
+    with pytest.raises(ValueError, match="node_id"):
+        VirtualNodeConfig(node_id=node_id)

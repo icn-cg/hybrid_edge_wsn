@@ -7,10 +7,11 @@ import asyncio
 import logging
 import math
 import random
+import socket
 import time
 from dataclasses import dataclass
 
-from gateway.protocol import PROTOCOL_VERSION, ReadingMessage, encode_message
+from gateway.protocol import PROTOCOL_VERSION, ReadingMessage, encode_message, validate_node_id
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,8 +30,7 @@ class VirtualNodeConfig:
     reconnect_max: float = 5.0
 
     def __post_init__(self) -> None:
-        if not self.node_id:
-            raise ValueError("node_id must not be empty")
+        validate_node_id(self.node_id)
         if self.sampling_interval <= 0:
             raise ValueError("sampling_interval must be positive")
         if self.startup_delay < 0 or self.artificial_delay < 0:
@@ -96,6 +96,9 @@ class VirtualNode:
                 _reader, writer = await asyncio.open_connection(
                     self.config.host, self.config.port
                 )
+                raw_socket: socket.socket | None = writer.get_extra_info("socket")
+                if raw_socket is not None:
+                    raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 LOGGER.debug("%s connected", self.config.node_id)
                 backoff = self.config.reconnect_initial
                 await self._send_loop(writer, max_samples, stop_event)

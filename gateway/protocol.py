@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 PROTOCOL_VERSION = 1
 NodeKind = Literal["physical", "virtual"]
+NODE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+NodeId = Annotated[str, Field(min_length=1, max_length=64, pattern=NODE_ID_PATTERN)]
 
 
 class ProtocolError(ValueError):
     """Raised when a wire message is not valid protocol data."""
+
+    def __init__(self, reason: Literal["malformed_json", "schema_validation"]) -> None:
+        super().__init__(f"invalid sensor message: {reason}")
+        self.reason = reason
 
 
 class BaseSensorMessage(BaseModel):
@@ -20,7 +26,7 @@ class BaseSensorMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     version: Literal[1]
-    node_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    node_id: NodeId
     node_kind: NodeKind
     sequence: int = Field(ge=0)
     timestamp_ms: int = Field(ge=0)
@@ -46,6 +52,7 @@ type SensorMessage = Annotated[
     Field(discriminator="type"),
 ]
 _MESSAGE_ADAPTER = TypeAdapter(SensorMessage)
+_NODE_ID_ADAPTER = TypeAdapter(NodeId)
 
 
 def parse_message(data: bytes | str) -> SensorMessage:
@@ -53,8 +60,22 @@ def parse_message(data: bytes | str) -> SensorMessage:
 
     try:
         return _MESSAGE_ADAPTER.validate_json(data)
-    except (ValidationError, ValueError) as exc:
-        raise ProtocolError("invalid sensor message") from exc
+    except ValidationError as exc:
+        reason = (
+            "malformed_json"
+            if any(error["type"] == "json_invalid" for error in exc.errors())
+            else "schema_validation"
+        )
+        raise ProtocolError(reason) from exc
+
+
+def validate_node_id(node_id: str) -> str:
+    """Validate a node ID before a node starts its asynchronous send loop."""
+
+    try:
+        return cast(str, _NODE_ID_ADAPTER.validate_python(node_id, strict=True))
+    except ValidationError as exc:
+        raise ValueError("node_id does not satisfy the protocol") from exc
 
 
 def encode_message(message: SensorMessage) -> bytes:

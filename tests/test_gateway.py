@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 
 import pytest
 
@@ -219,13 +220,18 @@ async def test_idle_timeout_disconnects_silent_client() -> None:
     await gateway.start()
     try:
         _reader, writer = await asyncio.open_connection("127.0.0.1", gateway.bound_port)
-        await wait_until(lambda: gateway.stats.active_connections == 0, timeout=1.0)
+        await wait_until(
+            lambda: gateway.stats.connections_accepted == 1
+            and gateway.stats.active_connections == 0,
+            timeout=1.0,
+        )
         writer.close()
         await writer.wait_closed()
     finally:
         await gateway.stop()
 
     assert gateway.stats.valid_messages == 0
+    assert gateway.stats.idle_disconnects == 1
 
 
 async def test_handler_exception_does_not_block_other_clients() -> None:
@@ -256,4 +262,60 @@ async def test_handler_exception_does_not_block_other_clients() -> None:
         await gateway.stop()
 
     assert received[0].node_id == "virtual-good"
+    assert gateway.stats.valid_messages == 2
+
+
+async def test_gateway_registry_classifies_sequences_and_disconnects_node() -> None:
+    received: list[ReceivedMessage] = []
+    gateway = GatewayServer(port=0, on_message=received.append)
+    await gateway.start()
+    try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", gateway.bound_port)
+        writer.write(reading_line("virtual-registry", 4) + reading_line("virtual-registry", 7))
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        await wait_until(
+            lambda: len(received) == 2
+            and gateway.registry.nodes["virtual-registry"].connected is False
+        )
+    finally:
+        await gateway.stop()
+
+    assert [item.sequence_status.value for item in received] == ["FIRST", "GAP"]
+    record = gateway.registry.nodes["virtual-registry"]
+    assert record.estimated_messages_missing == 2
+    assert record.messages_received == 2
+
+
+async def test_sync_callback_does_not_block_event_loop() -> None:
+    release_handlers = threading.Event()
+    callbacks_started = 0
+    callback_lock = threading.Lock()
+
+    def blocking_handler(_item: ReceivedMessage) -> None:
+        nonlocal callbacks_started
+        with callback_lock:
+            callbacks_started += 1
+        release_handlers.wait(timeout=1.0)
+
+    gateway = GatewayServer(port=0, on_message=blocking_handler)
+    await gateway.start()
+    writers: list[asyncio.StreamWriter] = []
+    try:
+        for index in range(2):
+            _reader, writer = await asyncio.open_connection("127.0.0.1", gateway.bound_port)
+            writers.append(writer)
+            writer.write(reading_line(f"virtual-block-{index}", 0))
+            await writer.drain()
+        await wait_until(
+            lambda: gateway.stats.connections_accepted == 2 and callbacks_started == 2
+        )
+    finally:
+        release_handlers.set()
+        for writer in writers:
+            writer.close()
+            await writer.wait_closed()
+        await gateway.stop()
+
     assert gateway.stats.valid_messages == 2

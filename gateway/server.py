@@ -5,13 +5,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import inspect
+import json
 import logging
 import signal
+import socket
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 
 from gateway.protocol import ProtocolError, SensorMessage, parse_message
+from gateway.registry import NodeRegistry, SequenceStatus
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
@@ -27,6 +31,7 @@ class ReceivedMessage:
     received_at_ms: int
     received_monotonic_ns: int
     wire_bytes: int
+    sequence_status: SequenceStatus
 
 
 MessageHandler = Callable[[ReceivedMessage], Awaitable[None] | None]
@@ -34,13 +39,29 @@ MessageHandler = Callable[[ReceivedMessage], Awaitable[None] | None]
 
 @dataclass(slots=True)
 class GatewayStats:
-    """Phase 1 counters useful for smoke tests and operator logs."""
+    """Application-boundary counters; these are not TCP/IP packet counters."""
 
     connections_accepted: int = 0
     active_connections: int = 0
     valid_messages: int = 0
-    invalid_messages: int = 0
     sensor_bytes: int = 0
+    malformed_json: int = 0
+    schema_rejections: int = 0
+    rejected_readings: int = 0
+    overlong_messages: int = 0
+    truncated_messages: int = 0
+    idle_disconnects: int = 0
+
+    @property
+    def invalid_messages(self) -> int:
+        """Compatibility total; use the individual counters for analysis."""
+
+        return (
+            self.malformed_json
+            + self.schema_rejections
+            + self.overlong_messages
+            + self.truncated_messages
+        )
 
 
 class GatewayServer:
@@ -53,20 +74,27 @@ class GatewayServer:
         *,
         max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
         client_idle_timeout: float = 30.0,
+        registry: NodeRegistry | None = None,
+        liveness_check_interval: float = 0.5,
         on_message: MessageHandler | None = None,
     ) -> None:
         if max_message_bytes < 1:
             raise ValueError("max_message_bytes must be positive")
         if client_idle_timeout <= 0:
             raise ValueError("client_idle_timeout must be positive")
+        if liveness_check_interval <= 0:
+            raise ValueError("liveness_check_interval must be positive")
 
         self.host = host
         self.port = port
         self.max_message_bytes = max_message_bytes
         self.client_idle_timeout = client_idle_timeout
+        self.liveness_check_interval = liveness_check_interval
         self.on_message = on_message
         self.stats = GatewayStats()
+        self.registry = registry or NodeRegistry()
         self._server: asyncio.Server | None = None
+        self._liveness_task: asyncio.Task[None] | None = None
         self._client_tasks: set[asyncio.Task[None]] = set()
         self._writers: set[asyncio.StreamWriter] = set()
 
@@ -89,6 +117,9 @@ class GatewayServer:
             self.port,
             limit=self.max_message_bytes + 1,
         )
+        self._liveness_task = asyncio.create_task(
+            self._monitor_liveness(), name="gateway-liveness"
+        )
         LOGGER.info("gateway listening on %s:%d", self.host, self.bound_port)
 
     async def serve_forever(self) -> None:
@@ -106,6 +137,12 @@ class GatewayServer:
         if server is not None:
             server.close()
             await server.wait_closed()
+
+        if self._liveness_task is not None:
+            self._liveness_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._liveness_task
+            self._liveness_task = None
 
         writers = tuple(self._writers)
         for writer in writers:
@@ -128,13 +165,17 @@ class GatewayServer:
         if task is not None:
             self._client_tasks.add(task)
         self._writers.add(writer)
+        raw_socket: socket.socket | None = writer.get_extra_info("socket")
+        if raw_socket is not None:
+            raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.stats.connections_accepted += 1
         self.stats.active_connections += 1
         peer = writer.get_extra_info("peername")
+        connection_nodes: set[str] = set()
         LOGGER.debug("client connected: %s", peer)
 
         try:
-            await self._read_client(reader)
+            await self._read_client(reader, connection_nodes)
         except (ConnectionError, TimeoutError):
             LOGGER.debug("client connection ended: %s", peer)
         except Exception:
@@ -142,6 +183,8 @@ class GatewayServer:
             LOGGER.exception("client handler failed: %s", peer)
         finally:
             self.stats.active_connections -= 1
+            for node_id in connection_nodes:
+                self.registry.connection_closed(node_id)
             self._writers.discard(writer)
             writer.close()
             try:
@@ -152,7 +195,9 @@ class GatewayServer:
                 self._client_tasks.discard(task)
             LOGGER.debug("client disconnected: %s", peer)
 
-    async def _read_client(self, reader: asyncio.StreamReader) -> None:
+    async def _read_client(
+        self, reader: asyncio.StreamReader, connection_nodes: set[str]
+    ) -> None:
         while True:
             try:
                 line = await asyncio.wait_for(
@@ -160,41 +205,76 @@ class GatewayServer:
                 )
             except ValueError:
                 # StreamReader raises ValueError if a line exceeds its configured limit.
-                self.stats.invalid_messages += 1
+                self.stats.overlong_messages += 1
                 LOGGER.warning("closing client after overlong message")
                 return
+            except TimeoutError:
+                self.stats.idle_disconnects += 1
+                raise
 
             if not line:
                 return
             if not line.endswith(b"\n"):
-                self.stats.invalid_messages += 1
+                self.stats.truncated_messages += 1
                 LOGGER.warning("discarding incomplete message at EOF")
                 return
             if len(line) - 1 > self.max_message_bytes:
-                self.stats.invalid_messages += 1
+                self.stats.overlong_messages += 1
                 LOGGER.warning("closing client after overlong message")
                 return
 
             wire_bytes = len(line)
+            received_at_ms = time.time_ns() // 1_000_000
+            received_monotonic_ns = time.monotonic_ns()
             try:
                 message = parse_message(line[:-1])
-            except ProtocolError:
-                self.stats.invalid_messages += 1
+            except ProtocolError as exc:
+                if exc.reason == "malformed_json":
+                    self.stats.malformed_json += 1
+                else:
+                    self.stats.schema_rejections += 1
+                    if self._is_reading_candidate(line):
+                        self.stats.rejected_readings += 1
                 LOGGER.warning("discarding malformed or invalid sensor message")
                 continue
 
             self.stats.valid_messages += 1
             self.stats.sensor_bytes += wire_bytes
+            sequence_status = self.registry.observe(
+                message,
+                received_at_ms=received_at_ms,
+                received_monotonic_ns=received_monotonic_ns,
+            )
+            if message.node_id not in connection_nodes:
+                connection_nodes.add(message.node_id)
+                self.registry.connection_opened(message.node_id)
             if self.on_message is not None:
                 received = ReceivedMessage(
                     message=message,
-                    received_at_ms=time.time_ns() // 1_000_000,
-                    received_monotonic_ns=time.monotonic_ns(),
+                    received_at_ms=received_at_ms,
+                    received_monotonic_ns=received_monotonic_ns,
                     wire_bytes=wire_bytes,
+                    sequence_status=sequence_status,
                 )
-                result = self.on_message(received)
+                if inspect.iscoroutinefunction(self.on_message):
+                    result = self.on_message(received)
+                else:
+                    result = await asyncio.to_thread(self.on_message, received)
                 if inspect.isawaitable(result):
                     await result
+
+    async def _monitor_liveness(self) -> None:
+        while True:
+            await asyncio.sleep(self.liveness_check_interval)
+            self.registry.refresh_health()
+
+    @staticmethod
+    def _is_reading_candidate(line: bytes) -> bool:
+        try:
+            value = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return False
+        return isinstance(value, dict) and value.get("type") == "reading"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -214,10 +294,12 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
     def log_message(received: ReceivedMessage) -> None:
         message = received.message
         LOGGER.info(
-            "received node=%s type=%s sequence=%d gateway_timestamp_ms=%d bytes=%d",
+            "received node=%s type=%s sequence=%d status=%s "
+            "gateway_timestamp_ms=%d bytes=%d",
             message.node_id,
             message.type,
             message.sequence,
+            received.sequence_status,
             received.received_at_ms,
             received.wire_bytes,
         )
