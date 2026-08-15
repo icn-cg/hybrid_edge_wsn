@@ -11,6 +11,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
 from gateway.aggregator import WindowAggregator, WindowSummary
+from gateway.events import GatewayEvent
 from gateway.protocol import ReadingMessage
 from gateway.upstream_protocol import (
     AggregateUpstreamRecord,
@@ -57,6 +58,7 @@ class UpstreamForwarder:
         reconnect_initial: float = 0.1,
         reconnect_max: float = 5.0,
         shutdown_timeout: float = 5.0,
+        on_event=None,
     ) -> None:
         if queue_size < 1:
             raise ValueError("queue_size must be positive")
@@ -73,11 +75,13 @@ class UpstreamForwarder:
         self.reconnect_initial = reconnect_initial
         self.reconnect_max = reconnect_max
         self.shutdown_timeout = shutdown_timeout
+        self.on_event = on_event
         self.stats = UpstreamStats()
         self._queue: asyncio.Queue[object] = asyncio.Queue(maxsize=queue_size)
         self._worker: asyncio.Task[None] | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._inflight = False
+        self._collector_available: bool | None = None
 
     async def start(self) -> None:
         if self._worker is not None:
@@ -109,6 +113,11 @@ class UpstreamForwarder:
             self._queue.put_nowait(received)
         except asyncio.QueueFull:
             self.stats.queue_full_drops += 1
+            self._emit_event(
+                "queue_full_drop",
+                node_id=received.message.node_id,
+                details={"queue_size": self._queue.maxsize},
+            )
             return False
         self.stats.readings_enqueued += 1
         return True
@@ -132,6 +141,10 @@ class UpstreamForwarder:
                 if queued is not _STOP:
                     self.stats.records_abandoned_on_shutdown += 1
                 self._queue.task_done()
+            self._emit_event(
+                "record_abandoned_on_shutdown",
+                details={"count": self.stats.records_abandoned_on_shutdown},
+            )
         finally:
             await self._close_connection()
 
@@ -245,11 +258,19 @@ class UpstreamForwarder:
             _reader, writer = await asyncio.open_connection(self.host, self.port)
         except (ConnectionError, OSError):
             self.stats.connection_failures += 1
+            if self._collector_available is not False:
+                self._collector_available = False
+                self._emit_event("collector_unavailable")
             raise
         raw_socket: socket.socket | None = writer.get_extra_info("socket")
         if raw_socket is not None:
             raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._writer = writer
+        if self._collector_available is False:
+            self._emit_event("collector_reconnected")
+        elif self._collector_available is None:
+            self._emit_event("collector_connected")
+        self._collector_available = True
         return writer
 
     async def _close_connection(self) -> None:
@@ -259,3 +280,22 @@ class UpstreamForwarder:
         writer.close()
         with suppress(ConnectionError):
             await writer.wait_closed()
+
+    def _emit_event(
+        self,
+        event_type: str,
+        *,
+        node_id: str = "",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        if self.on_event is None:
+            return
+        self.on_event(
+            GatewayEvent(
+                timestamp_ms=time.time_ns() // 1_000_000,
+                source="upstream",
+                event_type=event_type,
+                node_id=node_id,
+                details={} if details is None else details,
+            )
+        )

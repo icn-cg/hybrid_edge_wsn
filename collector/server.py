@@ -12,7 +12,7 @@ import socket
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from gateway.upstream_protocol import (
@@ -46,6 +46,7 @@ class CollectorStats:
     bytes_received: int = 0
     invalid_messages: int = 0
     overlong_messages: int = 0
+    truncated_messages: int = 0
 
 
 class CollectorServer:
@@ -128,7 +129,10 @@ class CollectorServer:
                     return
                 if not line:
                     return
-                if not line.endswith(b"\n") or len(line) - 1 > self.max_message_bytes:
+                if not line.endswith(b"\n"):
+                    self.stats.truncated_messages += 1
+                    return
+                if len(line) - 1 > self.max_message_bytes:
                     self.stats.overlong_messages += 1
                     return
                 try:
@@ -188,6 +192,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--output", type=Path, help="new NDJSON output file (refuses overwrite)")
+    parser.add_argument("--summary-output", type=Path)
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
     return parser.parse_args()
 
@@ -217,6 +222,17 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
         await stop_event.wait()
     finally:
         await collector.stop()
+        if args.summary_output is not None:
+            await asyncio.to_thread(
+                _write_summary, args.summary_output, asdict(collector.stats)
+            )
+
+
+def _write_summary(path: Path, value: dict[str, int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as output:
+        json.dump(value, output, indent=2, sort_keys=True)
+        output.write("\n")
 
 
 def main() -> None:

@@ -48,7 +48,9 @@ class VirtualNode:
         self.config = config
         self.sequence = 0
         self.samples_generated = 0
+        self.send_attempts = 0
         self.messages_sent = 0
+        self.application_drops = 0
         self._random = random.Random(config.seed)
         self._started_monotonic: float | None = None
 
@@ -131,11 +133,14 @@ class VirtualNode:
         while not self._done(max_samples, stop_event):
             reading = self.make_reading()
             if self._random.random() >= self.config.drop_probability:
+                self.send_attempts += 1
                 if self.config.artificial_delay:
                     await asyncio.sleep(self.config.artificial_delay)
                 writer.write(encode_message(reading))
                 await writer.drain()
                 self.messages_sent += 1
+            else:
+                self.application_drops += 1
 
             next_sample += self.config.sampling_interval
             await asyncio.sleep(max(0.0, next_sample - loop.time()))

@@ -12,9 +12,10 @@ import socket
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from gateway.events import GatewayEvent, HealthEvent
 from gateway.protocol import ProtocolError, SensorMessage, parse_message
 from gateway.registry import HealthTransition, NodeRegistry, SequenceStatus
 
@@ -36,6 +37,8 @@ class ReceivedMessage:
 
 
 MessageHandler = Callable[[ReceivedMessage], Awaitable[None] | None]
+GatewayEventHandler = Callable[[GatewayEvent], None]
+HealthEventHandler = Callable[[HealthEvent], None]
 
 
 @dataclass(slots=True)
@@ -78,6 +81,8 @@ class GatewayServer:
         registry: NodeRegistry | None = None,
         liveness_check_interval: float = 0.5,
         on_message: MessageHandler | None = None,
+        on_gateway_event: GatewayEventHandler | None = None,
+        on_health_event: HealthEventHandler | None = None,
     ) -> None:
         if max_message_bytes < 1:
             raise ValueError("max_message_bytes must be positive")
@@ -92,6 +97,8 @@ class GatewayServer:
         self.client_idle_timeout = client_idle_timeout
         self.liveness_check_interval = liveness_check_interval
         self.on_message = on_message
+        self.on_gateway_event = on_gateway_event
+        self.on_health_event = on_health_event
         self.stats = GatewayStats()
         self.registry = registry or NodeRegistry()
         self._server: asyncio.Server | None = None
@@ -173,6 +180,9 @@ class GatewayServer:
         self.stats.active_connections += 1
         peer = writer.get_extra_info("peername")
         connection_nodes: set[str] = set()
+        self._emit_gateway_event(
+            "connection_accepted", details={"peer": str(peer)}
+        )
         LOGGER.debug("client connected: %s", peer)
 
         try:
@@ -186,6 +196,7 @@ class GatewayServer:
             self.stats.active_connections -= 1
             for node_id in connection_nodes:
                 self.registry.connection_closed(node_id)
+                self._emit_gateway_event("connection_closed", node_id=node_id)
             self._writers.discard(writer)
             writer.close()
             try:
@@ -207,20 +218,24 @@ class GatewayServer:
             except ValueError:
                 # StreamReader raises ValueError if a line exceeds its configured limit.
                 self.stats.overlong_messages += 1
+                self._emit_gateway_event("oversized_message")
                 LOGGER.warning("closing client after overlong message")
                 return
             except TimeoutError:
                 self.stats.idle_disconnects += 1
+                self._emit_gateway_event("idle_disconnect")
                 raise
 
             if not line:
                 return
             if not line.endswith(b"\n"):
                 self.stats.truncated_messages += 1
+                self._emit_gateway_event("truncated_eof")
                 LOGGER.warning("discarding incomplete message at EOF")
                 return
             if len(line) - 1 > self.max_message_bytes:
                 self.stats.overlong_messages += 1
+                self._emit_gateway_event("oversized_message")
                 LOGGER.warning("closing client after overlong message")
                 return
 
@@ -232,10 +247,12 @@ class GatewayServer:
             except ProtocolError as exc:
                 if exc.reason == "malformed_json":
                     self.stats.malformed_json += 1
+                    self._emit_gateway_event("malformed_json")
                 else:
                     self.stats.schema_rejections += 1
                     if self._is_reading_candidate(line):
                         self.stats.rejected_readings += 1
+                    self._emit_gateway_event(self._schema_event_type(line))
                 LOGGER.warning("discarding malformed or invalid sensor message")
                 continue
 
@@ -251,10 +268,25 @@ class GatewayServer:
             for transition in self.registry.nodes[message.node_id].transitions[
                 transition_count:
             ]:
-                self._log_transition(transition)
+                self._handle_transition(transition)
+            if sequence_status not in (SequenceStatus.FIRST, SequenceStatus.IN_ORDER):
+                self._emit_gateway_event(
+                    sequence_status.value.lower(),
+                    node_id=message.node_id,
+                    timestamp_ms=received_at_ms,
+                    details={
+                        "sequence": message.sequence,
+                        "last_sequence": self.registry.nodes[message.node_id].last_sequence,
+                    },
+                )
             if message.node_id not in connection_nodes:
                 connection_nodes.add(message.node_id)
                 self.registry.connection_opened(message.node_id)
+                self._emit_gateway_event(
+                    "connection_opened",
+                    node_id=message.node_id,
+                    timestamp_ms=received_at_ms,
+                )
             if self.on_message is not None:
                 received = ReceivedMessage(
                     message=message,
@@ -274,16 +306,59 @@ class GatewayServer:
         while True:
             await asyncio.sleep(self.liveness_check_interval)
             for transition in self.registry.refresh_health():
-                self._log_transition(transition)
+                self._handle_transition(transition)
 
-    @staticmethod
-    def _log_transition(transition: HealthTransition) -> None:
+    def _handle_transition(self, transition: HealthTransition) -> None:
         LOGGER.info(
             "health node=%s previous=%s current=%s timestamp_ms=%d",
             transition.node_id,
             transition.previous,
             transition.current,
             transition.timestamp_ms,
+        )
+        if self.on_health_event is None:
+            return
+        record = self.registry.nodes[transition.node_id]
+        reason = (
+            "initial_message"
+            if transition.previous is None
+            else "valid_message_recovery"
+            if transition.current.value == "ONLINE"
+            else "liveness_timeout"
+        )
+        self.on_health_event(
+            HealthEvent(
+                timestamp_ms=transition.timestamp_ms,
+                node_id=record.node_id,
+                node_kind=record.node_kind,
+                old_state="" if transition.previous is None else transition.previous.value,
+                new_state=transition.current.value,
+                reason=reason,
+                last_seen_ms=record.last_seen_ms,
+                last_sequence=record.last_sequence,
+            )
+        )
+
+    def _emit_gateway_event(
+        self,
+        event_type: str,
+        *,
+        node_id: str = "",
+        timestamp_ms: int | None = None,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        if self.on_gateway_event is None:
+            return
+        self.on_gateway_event(
+            GatewayEvent(
+                timestamp_ms=time.time_ns() // 1_000_000
+                if timestamp_ms is None
+                else timestamp_ms,
+                source="gateway",
+                event_type=event_type,
+                node_id=node_id,
+                details={} if details is None else details,
+            )
         )
 
     @staticmethod
@@ -293,6 +368,16 @@ class GatewayServer:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return False
         return isinstance(value, dict) and value.get("type") == "reading"
+
+    @staticmethod
+    def _schema_event_type(line: bytes) -> str:
+        try:
+            value = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return "invalid_message"
+        if isinstance(value, dict) and value.get("version") != 1:
+            return "unsupported_protocol_version"
+        return "invalid_message"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -312,16 +397,26 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--collector-host", default="127.0.0.1")
     parser.add_argument("--collector-port", type=int, default=9662)
     parser.add_argument("--aggregation-window", type=float, default=5.0)
+    parser.add_argument("--forwarder-queue-size", type=int, default=10_000)
+    parser.add_argument("--storage-queue-size", type=int, default=10_000)
     parser.add_argument("--expected-interval", type=float, default=1.0)
     parser.add_argument("--suspect-after", type=float, default=3.0)
     parser.add_argument("--offline-after", type=float, default=5.0)
     parser.add_argument("--liveness-check-interval", type=float, default=0.5)
+    parser.add_argument("--gateway-events-output", type=Path)
+    parser.add_argument("--health-events-output", type=Path)
+    parser.add_argument("--event-queue-size", type=int, default=10_000)
+    parser.add_argument("--system-metrics-output", type=Path)
+    parser.add_argument("--metrics-interval", type=float, default=0.5)
+    parser.add_argument("--summary-output", type=Path)
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
     return parser.parse_args()
 
 
 async def _run_from_cli(args: argparse.Namespace) -> None:
     # Local import avoids a module cycle: storage records ReceivedMessage metadata.
+    from gateway.events import ExperimentEventRecorder
+    from gateway.metrics import SystemMetricsSampler
     from gateway.storage import RawMessageStore
     from gateway.upstream import ForwardMode, UpstreamForwarder
 
@@ -330,7 +425,33 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
 
-    store = RawMessageStore(args.raw_output) if args.raw_output is not None else None
+    if (args.gateway_events_output is None) != (args.health_events_output is None):
+        raise ValueError("gateway and health event outputs must be configured together")
+    recorder = (
+        ExperimentEventRecorder(
+            args.gateway_events_output,
+            args.health_events_output,
+            queue_size=args.event_queue_size,
+        )
+        if args.gateway_events_output is not None
+        else None
+    )
+    if recorder is not None:
+        await recorder.start()
+    metrics = (
+        SystemMetricsSampler(
+            args.system_metrics_output, interval_seconds=args.metrics_interval
+        )
+        if args.system_metrics_output is not None
+        else None
+    )
+    if metrics is not None:
+        await metrics.start()
+    store = (
+        RawMessageStore(args.raw_output, queue_size=args.storage_queue_size)
+        if args.raw_output is not None
+        else None
+    )
     if store is not None:
         await store.start()
     forwarder = (
@@ -339,6 +460,8 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
             args.collector_port,
             mode=ForwardMode(args.upstream_mode),
             aggregation_window_seconds=args.aggregation_window,
+            queue_size=args.forwarder_queue_size,
+            on_event=None if recorder is None else recorder.record_gateway,
         )
         if args.upstream_mode != "disabled"
         else None
@@ -374,6 +497,8 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
         registry=registry,
         liveness_check_interval=args.liveness_check_interval,
         on_message=log_message,
+        on_gateway_event=None if recorder is None else recorder.record_gateway,
+        on_health_event=None if recorder is None else recorder.record_health,
     )
     await gateway.start()
     try:
@@ -384,6 +509,38 @@ async def _run_from_cli(args: argparse.Namespace) -> None:
             await forwarder.stop()
         if store is not None:
             await store.stop()
+        if metrics is not None:
+            await metrics.stop()
+        if recorder is not None:
+            await recorder.stop()
+        if args.summary_output is not None:
+            summary = {
+                "gateway": {
+                    **asdict(gateway.stats),
+                    "invalid_messages": gateway.stats.invalid_messages,
+                },
+                "registry": {
+                    node_id: asdict(record)
+                    for node_id, record in gateway.registry.nodes.items()
+                },
+                "storage": None if store is None else asdict(store.stats),
+                "upstream": None if forwarder is None else asdict(forwarder.stats),
+                "events": None
+                if recorder is None
+                else {
+                    "gateway": asdict(recorder.gateway_writer.stats),
+                    "health": asdict(recorder.health_writer.stats),
+                },
+                "metrics": None if metrics is None else asdict(metrics.stats),
+            }
+            await asyncio.to_thread(_write_json_exclusive, args.summary_output, summary)
+
+
+def _write_json_exclusive(path: Path, value: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as output:
+        json.dump(value, output, indent=2, default=str, sort_keys=True)
+        output.write("\n")
 
 
 def main() -> None:
