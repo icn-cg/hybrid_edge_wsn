@@ -4,9 +4,14 @@ This directory contains the Phase 4 firmware for one ESP32 plus BME280 node. The
 a classic ESP32 DevKit V1 with a CP2102 USB-to-UART bridge. The PlatformIO environment therefore uses
 PlatformIO's documented
 [`esp32doit-devkit-v1`](https://docs.platformio.org/en/latest/boards/espressif32/esp32doit-devkit-v1.html)
-board definition, the Arduino framework, and C++17. Hardware upload and sensor validation remain
-human-operated steps. The reproducible target environment pins Espressif 32 platform `7.0.1`,
-Arduino-ESP32 framework package `3.20017.241212`, and Adafruit BME280 library `2.3.0`.
+board definition, the Arduino framework, and C++17. USB upload, Serial boot, Wi-Fi scan,
+association, and DHCP have passed on ESP32-B and ESP32-C; BME280 validation has not begun. The
+reproducible target environment pins Espressif 32 platform `7.0.1`, Arduino-ESP32 framework package
+`3.20017.241212`, and Adafruit BME280 library `2.3.0`.
+
+All physical devices used or evaluated during bring-up—including compute hosts, access points,
+ESP32 boards, BME280 breakouts, and USB support hardware—are tracked in
+[HARDWARE_INVENTORY.md](HARDWARE_INVENTORY.md).
 
 ## Existing version-1 wire contract
 
@@ -101,10 +106,10 @@ command and is expected to lack an application entry point.
 These tests validate encoding, newline framing, schema ranges, configuration, boot sequence, write
 success semantics, and capped backoff. They do not claim to test Wi-Fi, I2C, or hardware.
 
-## Verified I2C wiring for the six-pin breakout
+## Planned I2C wiring for the six-pin breakout
 
-Do not use the loose, unsoldered HW-611 header. With both boards powered off, wire the replacement
-pre-soldered BME280 as follows:
+Do not use the loose, unsoldered HW-611 header. After the replacement is available and with both
+boards powered off, wire the pre-soldered BME280 as follows:
 
 | ESP32 DevKit V1 | Six-pin BME280 | Purpose |
 |---|---|---|
@@ -160,6 +165,12 @@ board. The CP2102 normally controls automatic reset; only if upload repeatedly w
 mode should the operator hold BOOT, start upload, release BOOT when connection begins, and press EN
 afterward if needed.
 
+The one-shot Wi-Fi scan and disconnect-reason callback remain available behind
+`WIFI_BRINGUP_SCAN_ON_BOOT` and `WIFI_BRINGUP_REASON_DIAGNOSTIC` in `platformio.ini`. Both are
+disabled by default after successful network bring-up. Temporarily set the relevant value to `1`,
+rebuild, and flash only when diagnosing Wi-Fi; the scan prints visible SSIDs, so do not retain its
+output as experiment evidence.
+
 With no BME280, expected output includes the following. Wi-Fi/TCP lines appear only when the ignored
 `secrets.hpp` has real credentials; retries may interleave.
 
@@ -186,7 +197,59 @@ the node sends no fabricated application record. The gateway may close this sile
 approximately 30-second idle timeout; a subsequent firmware TCP reconnect is expected and is not a
 crash or reboot.
 
-## August 16 BME280 bring-up
+## Pre-sensor TCP rehearsal on the Pi
+
+This is an engineering rehearsal, not a scientific experiment. Confirm that `wsn-edge` still owns
+`192.168.1.187`, then run the following from the repository root on the Pi. Every invocation creates
+a fresh temporary evidence directory, and each writer refuses to overwrite an existing file.
+
+```bash
+run_dir="$(mktemp -d /tmp/hybrid-edge-wsn-presensor.XXXXXX)"
+echo "temporary evidence: $run_dir"
+.venv/bin/python -m gateway.server \
+  --host 0.0.0.0 \
+  --port 8662 \
+  --upstream-mode disabled \
+  --raw-output "$run_dir/raw.ndjson" \
+  --gateway-events-output "$run_dir/gateway-events.ndjson" \
+  --health-events-output "$run_dir/health-events.ndjson" \
+  --summary-output "$run_dir/summary.json" \
+  --log-level INFO
+```
+
+With ESP32-C connected and no sensor attached, reset the ESP32 only after the gateway reports
+`gateway listening on 0.0.0.0:8662`. Expected Serial evidence is:
+
+```text
+Wi-Fi connected; ESP32 IP: <DHCP-assigned-address>
+Connecting to gateway 192.168.1.187:8662
+Gateway TCP connected
+Trying BME280 at I2C address 0x76
+Trying BME280 at I2C address 0x77
+BME280 not detected at 0x76 or 0x77; will retry safely
+```
+
+The BME280 probes repeat. There must be no `Sample`, `TX sequence=`, `Send success`, or NDJSON
+reading. At INFO level, a silent TCP accept is intentionally not logged as a sensor observation.
+After stopping the gateway with Ctrl+C, `gateway-events.ndjson` must contain at least one
+`connection_accepted` event and may also contain idle/close events. `raw.ndjson` and
+`health-events.ndjson` must both be empty. The summary must show at least one accepted connection,
+`active_connections: 0`, `valid_messages: 0`, `sensor_bytes: 0`, an empty `registry`, and zero
+storage records. In particular, `physical-001` must not appear in the registry because the gateway
+creates node state only after parsing a valid application message.
+
+To validate gateway loss and recovery, stop the first gateway with Ctrl+C while Serial remains open.
+Expect `Gateway TCP disconnected`, failed connection attempts, and retry delays that grow from 1
+second toward the 30-second cap. Restart the gateway by rerunning the complete command above so it
+gets a new `run_dir`. Do not reuse the previous output paths. Without resetting the ESP32, wait up
+to the current backoff interval and require another `Gateway TCP connected`. Stop the second gateway
+and verify its fresh raw file and registry are also empty. This proves transport recovery only; it
+does not prove sensing, delivery of a `ReadingMessage`, or scientific performance.
+
+## Deferred BME280 bring-up
+
+Do not begin this section until the replacement sensor is available. No BME280 is currently
+connected or validated, and no physical sensor data has been produced.
 
 ### A. Wire while powered off
 
@@ -235,6 +298,7 @@ IN_ORDER.
 - Clone boards marked DEVKITV1 can differ in flash population and automatic-reset circuitry despite
   sharing the common form factor; the first upload is the definitive check.
 - A charge-only USB-C cable or missing/incompatible CP210x VCP driver can hide the serial port.
-- The replacement generic BME280 board's regulator, pull-ups, soldering, and even sensor identity are
-  not yet physically verified. Keep it at 3.3 V and validate humidity as well as chip detection.
+- The planned replacement generic BME280 board's regulator, pull-ups, soldering, and even sensor
+  identity are not yet physically verified. Keep it at 3.3 V and validate humidity as well as chip
+  detection after it arrives.
 - The Pi address is DHCP-assigned and can change; verify it before each bring-up.

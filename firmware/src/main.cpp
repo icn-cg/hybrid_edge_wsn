@@ -7,9 +7,18 @@
 #include <cinttypes>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 
 #include "config.hpp"
 #include "node_protocol.hpp"
+
+#ifndef WIFI_BRINGUP_SCAN_ON_BOOT
+#define WIFI_BRINGUP_SCAN_ON_BOOT 0
+#endif
+
+#ifndef WIFI_BRINGUP_REASON_DIAGNOSTIC
+#define WIFI_BRINGUP_REASON_DIAGNOSTIC 0
+#endif
 
 #if __has_include("secrets.hpp")
 #include "secrets.hpp"
@@ -63,6 +72,129 @@ bool secrets_configured() {
            std::strlen(secrets::WIFI_PASSWORD) > 0 &&
            std::strcmp(secrets::WIFI_PASSWORD, "REPLACE_WITH_WIFI_PASSWORD") != 0;
 }
+
+#if WIFI_BRINGUP_SCAN_ON_BOOT
+const char *wifi_security_name(wifi_auth_mode_t security) {
+    switch (security) {
+        case WIFI_AUTH_OPEN:
+            return "OPEN";
+        case WIFI_AUTH_WEP:
+            return "WEP";
+        case WIFI_AUTH_WPA_PSK:
+            return "WPA_PSK";
+        case WIFI_AUTH_WPA2_PSK:
+            return "WPA2_PSK";
+        case WIFI_AUTH_WPA_WPA2_PSK:
+            return "WPA_WPA2_PSK";
+        case WIFI_AUTH_ENTERPRISE:
+            return "WPA2_ENTERPRISE";
+        case WIFI_AUTH_WPA3_PSK:
+            return "WPA3_PSK";
+        case WIFI_AUTH_WPA2_WPA3_PSK:
+            return "WPA2_WPA3_PSK";
+        case WIFI_AUTH_WAPI_PSK:
+            return "WAPI_PSK";
+        case WIFI_AUTH_WPA3_ENT_192:
+            return "WPA3_ENTERPRISE_192";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+void scan_wifi_once() {
+    Serial.println("Wi-Fi bring-up scan starting (one shot; bounded to 10 seconds)");
+    const int16_t network_count = WiFi.scanNetworks(false, true, false, 300);
+    if (network_count < 0) {
+        Serial.printf("Wi-Fi scan failed with status %d\n", network_count);
+        WiFi.scanDelete();
+        return;
+    }
+
+    Serial.printf("Wi-Fi networks found: %d\n", network_count);
+    bool target_visible = false;
+    int32_t target_rssi = std::numeric_limits<int32_t>::min();
+    int32_t target_channel = 0;
+    for (int16_t index = 0; index < network_count; ++index) {
+        const String ssid = WiFi.SSID(index);
+        const int32_t rssi = WiFi.RSSI(index);
+        const int32_t channel = WiFi.channel(index);
+        const wifi_auth_mode_t security = WiFi.encryptionType(index);
+        Serial.printf(
+            "  [%d] SSID=\"%s\" RSSI=%ld dBm channel=%ld security=%s\n",
+            index + 1,
+            ssid.length() == 0 ? "<hidden>" : ssid.c_str(),
+            static_cast<long>(rssi),
+            static_cast<long>(channel),
+            wifi_security_name(security));
+        if (ssid == secrets::WIFI_SSID && (!target_visible || rssi > target_rssi)) {
+            target_visible = true;
+            target_rssi = rssi;
+            target_channel = channel;
+        }
+    }
+    if (target_visible) {
+        Serial.printf(
+            "Configured target SSID visible: YES; RSSI=%ld dBm channel=%ld\n",
+            static_cast<long>(target_rssi),
+            static_cast<long>(target_channel));
+    } else {
+        Serial.println("Configured target SSID visible: NO");
+    }
+    WiFi.scanDelete();
+    Serial.println("Wi-Fi bring-up scan complete; normal reconnect logic starting");
+}
+#endif
+
+#if WIFI_BRINGUP_REASON_DIAGNOSTIC
+const char *wifi_disconnect_reason_name(uint8_t reason) {
+    switch (reason) {
+        case WIFI_REASON_UNSPECIFIED:
+            return "UNSPECIFIED";
+        case WIFI_REASON_AUTH_EXPIRE:
+            return "AUTH_EXPIRE";
+        case WIFI_REASON_AUTH_LEAVE:
+            return "AUTH_LEAVE";
+        case WIFI_REASON_ASSOC_EXPIRE:
+            return "ASSOC_EXPIRE";
+        case WIFI_REASON_NOT_AUTHED:
+            return "NOT_AUTHED";
+        case WIFI_REASON_NOT_ASSOCED:
+            return "NOT_ASSOCED";
+        case WIFI_REASON_ASSOC_LEAVE:
+            return "ASSOC_LEAVE";
+        case WIFI_REASON_ASSOC_NOT_AUTHED:
+            return "ASSOC_NOT_AUTHED";
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+            return "4WAY_HANDSHAKE_TIMEOUT";
+        case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:
+            return "GROUP_KEY_UPDATE_TIMEOUT";
+        case WIFI_REASON_802_1X_AUTH_FAILED:
+            return "802_1X_AUTH_FAILED";
+        case WIFI_REASON_BEACON_TIMEOUT:
+            return "BEACON_TIMEOUT";
+        case WIFI_REASON_NO_AP_FOUND:
+            return "NO_AP_FOUND";
+        case WIFI_REASON_AUTH_FAIL:
+            return "AUTH_FAIL";
+        case WIFI_REASON_ASSOC_FAIL:
+            return "ASSOC_FAIL";
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:
+            return "HANDSHAKE_TIMEOUT";
+        case WIFI_REASON_CONNECTION_FAIL:
+            return "CONNECTION_FAIL";
+        default:
+            return "OTHER";
+    }
+}
+
+void on_wifi_station_disconnected(WiFiEvent_t, WiFiEventInfo_t info) {
+    const uint8_t reason = info.wifi_sta_disconnected.reason;
+    Serial.printf(
+        "Wi-Fi station disconnected: reason=%u (%s)\n",
+        static_cast<unsigned>(reason),
+        wifi_disconnect_reason_name(reason));
+}
+#endif
 
 bool initialize_sensor() {
     for (const uint8_t address : {static_cast<uint8_t>(0x76), static_cast<uint8_t>(0x77)}) {
@@ -292,6 +424,15 @@ void setup() {
         network_ready = true;
         WiFi.mode(WIFI_STA);
         WiFi.setAutoReconnect(false);
+#if WIFI_BRINGUP_SCAN_ON_BOOT
+        scan_wifi_once();
+#endif
+#if WIFI_BRINGUP_REASON_DIAGNOSTIC
+        WiFi.onEvent(
+            on_wifi_station_disconnected,
+            WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+        Serial.println("Wi-Fi disconnect reason diagnostic enabled");
+#endif
     } else {
         Serial.println(
             "Wi-Fi disabled: copy secrets.example.hpp to secrets.hpp and set credentials");

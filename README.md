@@ -8,8 +8,9 @@ The current implementation is **Phase 4: one physical-node ESP32 bring-up**. It 
 versioned sensor protocol, concurrent gateway and collector, immutable run manifests, persisted
 health/gateway events, independently accounted virtual generation, CPU/memory sampling,
 subprocess orchestration, evidence-driven analysis, a real Raspberry Pi software rehearsal, and
-host-tested ESP32/BME280 firmware logic. The identified ESP32 target builds successfully; flashing
-and physical sensor validation have not started.
+host-tested ESP32/BME280 firmware logic. Two ESP32 boards have passed USB flash, Serial boot, Wi-Fi
+scan, association, and DHCP; the initial board is quarantined for a repeatable Wi-Fi/RF failure.
+No BME280 is connected or validated, and no physical sensor data has been produced.
 
 ## Research question
 
@@ -23,7 +24,7 @@ or conclusions have been produced.
 ## Architecture
 
 ```text
-Physical node (prepared; not flashed)           Mac upstream collector
+Physical node (ESP32 validated; sensor pending) Mac upstream collector
 BME280 -> ESP32 -- Wi-Fi/TCP --+                         ^
                                |                         | TCP/NDJSON
 Virtual nodes -- TCP ----------+-> Raspberry Pi gateway-+
@@ -325,17 +326,20 @@ aggregation delay is not hidden.
 
 ## Hardware and PlatformIO status
 
-Phase 4 uses one classic ESP32 DevKit V1 with a CP2102 USB-to-UART bridge. PlatformIO board
-`esp32doit-devkit-v1` builds with Arduino and GNU C++17. Firmware explicitly assigns GPIO21 as SDA
-and GPIO22 as SCL, probes BME280 addresses `0x76` then `0x77`, and targets node
-`physical-001`. See [firmware/README.md](firmware/README.md) for the full contract, verified wiring,
-and tomorrow's end-to-end procedure.
+Phase 4 evaluated three classic ESP32 DevKit V1 boards with CP2102 USB-to-UART bridges. ESP32-A is
+quarantined from Wi-Fi use; ESP32-B is the primary physical-node candidate; ESP32-C is a validated
+backup selected for the pre-sensor rehearsal. PlatformIO board `esp32doit-devkit-v1` builds with
+Arduino and GNU C++17. Firmware explicitly assigns GPIO21 as SDA and GPIO22 as SCL, probes BME280
+addresses `0x76` then `0x77`, and targets node
+`physical-001`. See [firmware/README.md](firmware/README.md) for the full contract, planned wiring,
+and checkpoint procedure. The complete physical device registry is maintained in
+[firmware/HARDWARE_INVENTORY.md](firmware/HARDWARE_INVENTORY.md).
 
-The current HW-611 BME280 has an unsoldered header and must not be used. A replacement pre-soldered
-module is expected August 16. Tonight's bring-up therefore connects only the ESP32 and must never
-produce a sensor reading.
+The HW-611 BME280 has an unsoldered header and must not be used. The replacement pre-soldered module
+is not yet available or connected. The pre-sensor checkpoint therefore connects only ESP32-C and
+must never produce a sensor reading or a `physical-001` registry observation.
 
-### ESP32-only bring-up tonight
+### Pre-sensor ESP32/TCP checkpoint
 
 Activate the development environment, confirm PlatformIO, and compare the device list before and
 after attaching a known data-capable USB-C cable:
@@ -375,11 +379,14 @@ and connect to `192.168.1.187:8662`. It must print no `Sample`, `TX`, or JSON re
 Because the gateway creates a registry entry only after a valid application message, a sensor-free
 TCP connection does not create `physical-001`. The Pi may accept the socket and close it after its
 approximately 30-second idle timeout; firmware TCP reconnects are expected in this mode and are not
-a crash or reboot.
+a crash or reboot. The exact fresh-path Pi command, expected zero-record summary, and gateway
+stop/restart recovery procedure are documented in
+[firmware/README.md](firmware/README.md#pre-sensor-tcp-rehearsal-on-the-pi).
 
-### BME280 bring-up August 16
+### Deferred BME280 bring-up
 
-With ESP32 power disconnected, wire the replacement at 3.3 V: 3V3→VCC, GND→GND, GPIO22→SCL,
+Only after the replacement arrives, with ESP32 power disconnected, wire it at 3.3 V: 3V3→VCC,
+GND→GND, GPIO22→SCL,
 GPIO21→SDA, 3V3→CSB, and GND→SDO (address `0x76`). After reboot, require detection, a finite and
 plausible temperature/humidity/pressure sample, then validate sequences `0`, `1`, `2`, ... through
 the Pi and Mac collector in RAW mode. Only after that should failure/recovery and aggregation checks
@@ -472,9 +479,9 @@ pyproject.toml           pytest and Ruff configuration
 
 ## Current limitations and next milestone
 
-The Raspberry Pi software path is validated as an engineering rehearsal, and the identified ESP32
-target builds successfully. The next action is the ESP32-only USB/upload/Serial/Wi-Fi/TCP bring-up
-above; the replacement BME280 is wired only after it arrives. Clock synchronization, real network
-impairment, multiple physical nodes, and the final experiment matrix remain later work. This
-repository does not claim a successful flash, BME280 reading, physical performance result, or
-physical one-way latency.
+The Raspberry Pi software path is validated as an engineering rehearsal, and ESP32-B and ESP32-C
+have passed flash and Wi-Fi/DHCP bring-up. The next action is the sensor-absent ESP32-C-to-Pi TCP
+checkpoint above; the replacement BME280 is wired only after it arrives. Clock synchronization,
+real network impairment, multiple physical nodes, and the final experiment matrix remain later
+work. This repository claims successful flash and Wi-Fi bring-up only; it does not claim a BME280
+reading, physical sensor delivery, physical performance result, or physical one-way latency.

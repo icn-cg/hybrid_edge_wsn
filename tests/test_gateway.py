@@ -232,6 +232,7 @@ async def test_idle_timeout_disconnects_silent_client() -> None:
 
     assert gateway.stats.valid_messages == 0
     assert gateway.stats.idle_disconnects == 1
+    assert gateway.registry.nodes == {}
 
 
 async def test_handler_exception_does_not_block_other_clients() -> None:
