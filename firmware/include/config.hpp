@@ -2,9 +2,21 @@
 
 #include <cstdint>
 
+#ifndef HYBRID_WSN_NODE_PROFILE
+#define HYBRID_WSN_NODE_PROFILE 1
+#endif
+
 namespace node_config {
 
+#if HYBRID_WSN_NODE_PROFILE == 1
 inline constexpr char NODE_ID[] = "physical-001";
+#elif HYBRID_WSN_NODE_PROFILE == 2
+inline constexpr char NODE_ID[] = "physical-002";
+#elif HYBRID_WSN_NODE_PROFILE == 3
+inline constexpr char NODE_ID[] = "physical-003";
+#else
+#error "HYBRID_WSN_NODE_PROFILE must be 1, 2, or 3"
+#endif
 inline constexpr char GATEWAY_HOST[] = "192.168.1.187";
 inline constexpr uint16_t GATEWAY_PORT = 8662;
 inline constexpr uint32_t SAMPLING_INTERVAL_MS = 1000;

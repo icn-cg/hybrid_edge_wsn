@@ -9,6 +9,7 @@ test_binary="${TMPDIR:-/tmp}/hybrid_edge_wsn_firmware_host_tests"
   -Wall \
   -Wextra \
   -Werror \
+  -I"${firmware_dir}/include" \
   -I"${firmware_dir}/lib/NodeProtocol/src" \
   "${firmware_dir}/lib/NodeProtocol/src/node_protocol.cpp" \
   "${firmware_dir}/test/test_node_protocol/test_main.cpp" \

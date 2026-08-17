@@ -6,8 +6,8 @@ PlatformIO's documented
 [`esp32doit-devkit-v1`](https://docs.platformio.org/en/latest/boards/espressif32/esp32doit-devkit-v1.html)
 board definition, the Arduino framework, and C++17. USB upload, Serial boot, Wi-Fi association, and
 DHCP have passed on ESP32-B, ESP32-C, and ESP32-D. A pre-soldered BME280 on ESP32-B has passed local
-I2C/Serial validation and physical RAW persistence on the Pi; Mac collector delivery remains
-pending. The reproducible target environment pins Espressif 32 platform `7.0.1`, Arduino-ESP32
+I2C/Serial validation and physical RAW delivery through the Pi to the Mac collector. The
+reproducible target environment pins Espressif 32 platform `7.0.1`, Arduino-ESP32
 framework package `3.20017.241212`, and Adafruit BME280 library `2.3.0`.
 
 All physical devices used or evaluated during bring-up—including compute hosts, access points,
@@ -72,9 +72,23 @@ gateway's 64 KiB limit.
 
 ## Configuration and secrets
 
-Non-secret settings live in `include/config.hpp`: node ID, gateway host, gateway port, sample
-interval, timeouts, and backoff. The rehearsal Pi address is present in this one file only and must
-be checked after DHCP changes.
+Non-secret settings live in `include/config.hpp`: the default node profile, gateway host, gateway
+port, sample interval, timeouts, and backoff. PlatformIO overrides only the node profile for the
+explicit board profiles; the rehearsal Pi address remains in this one file and must be checked
+after DHCP changes.
+
+The build profiles and reserved assignments are:
+
+| PlatformIO environment | Emitted node ID | Board assignment |
+|---|---|---|
+| `physical-node` | `physical-001` | Backward-compatible alias for ESP32-B |
+| `physical-node-001` | `physical-001` | ESP32-B, station MAC ending `52:98` |
+| `physical-node-002` | `physical-002` | ESP32-C, station MAC ending `2a:54` |
+| `physical-node-003` | `physical-003` | ESP32-D, station MAC ending `3d:a8` |
+
+Each profile uses the same ignored `secrets.hpp` and gateway configuration. Confirm the attached
+board's station MAC before every upload. Never flash ESP32-C or ESP32-D with the default
+`physical-node` target now that unique profiles exist.
 
 Sensor-only firmware can build without a secrets file; networking stays disabled. Before bring-up,
 create the ignored credentials file:
@@ -153,12 +167,21 @@ device appears, do not install another driver. If the CP2102 appears in the USB 
 device is created, then check the current macOS compatibility notes and install the current Silicon
 Labs CP210x VCP driver. First rule out a charge-only cable and USB adapter problem.
 
-Build, upload, and monitor with the detected port substituted literally for `<PORT>`:
+Build, upload, and monitor ESP32-B with the detected port substituted literally for `<PORT>`:
 
 ```bash
-pio run -d firmware -e physical-node
-pio run -d firmware -e physical-node -t upload --upload-port <PORT>
+pio run -d firmware -e physical-node-001
+pio run -d firmware -e physical-node-001 -t upload --upload-port <PORT>
 pio device monitor -d firmware --port <PORT> --baud 115200
+```
+
+For ESP32-C use `physical-node-002`; for ESP32-D use `physical-node-003`. Build all three without
+flashing by running:
+
+```bash
+pio run -d firmware -e physical-node-001
+pio run -d firmware -e physical-node-002
+pio run -d firmware -e physical-node-003
 ```
 
 Do not include angle brackets in the real command. PlatformIO uses `esptool` by default for this
@@ -249,8 +272,8 @@ does not prove sensing, delivery of a `ReadingMessage`, or scientific performanc
 
 ## BME280 bring-up
 
-Sections A through C passed on ESP32-B on 2026-08-16. Section D remains pending, and all bring-up
-checks must be treated as engineering validation rather than a scientific experiment.
+Sections A through D passed on ESP32-B on 2026-08-16. All bring-up checks are engineering
+validation rather than a scientific experiment.
 
 ### A. Wire while powered off
 
@@ -301,6 +324,12 @@ Run the Mac collector in the project's existing RAW workflow and verify the chai
 Wi-Fi -> Pi gateway -> Mac collector. Check both Pi persistence and collector record counts. This is a
 bring-up validation, not a wireless-performance or latency claim.
 
+This passed with 812 physical readings: the Pi persisted and forwarded all 812 records, and the Mac
+collector received all 812. The Pi and collector summaries reported matching 361,242 upstream
+application bytes, with zero invalid, overlong, or truncated messages and no upstream send failure,
+abandonment, or queue drop. The preserved temporary evidence paths are recorded only as engineering
+artifacts and are not scientific results.
+
 ### E. Validate failure and recovery
 
 After several in-order readings, disconnect ESP32 power. Verify the Pi transitions the registered node
@@ -313,6 +342,6 @@ IN_ORDER.
 - Clone boards marked DEVKITV1 can differ in flash population and automatic-reset circuitry despite
   sharing the common form factor; the first upload is the definitive check.
 - A charge-only USB-C cable or missing/incompatible CP210x VCP driver can hide the serial port.
-- The generic BME280 breakout passed local detection and sample validation at 3.3 V, but its
-  long-duration stability and end-to-end delivery through the Pi and collector remain unverified.
+- The generic BME280 breakout passed local detection, sampling, and bounded end-to-end RAW delivery
+  at 3.3 V, but its long-duration stability remains unverified.
 - The Pi address is DHCP-assigned and can change; verify it before each bring-up.

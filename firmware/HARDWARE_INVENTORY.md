@@ -12,10 +12,10 @@ as DHCP addresses and serial-device paths are observations, not permanent identi
 | `PI-EDGE` | Raspberry Pi 4, approximately 4 GB RAM | `wsn-edge` gateway host | Active; software path validated |
 | `ESP32-A` | Generic ESP32 DevKit V1 | Initial physical-node candidate | Quarantined; Wi-Fi hardware failure |
 | `ESP32-B` | Generic ESP32 DevKit V1 | Active `physical-001` node | Wi-Fi bring-up passed |
-| `ESP32-C` | Generic ESP32 DevKit V1 | Validated spare; no unique node ID assigned | Wi-Fi bring-up passed |
-| `ESP32-D` | Generic ESP32 DevKit V1 | Validated spare; no unique node ID assigned | Wi-Fi bring-up passed |
+| `ESP32-C` | Generic ESP32 DevKit V1 | Reserved `physical-002` node | Wi-Fi passed; unique profile built, not yet flashed |
+| `ESP32-D` | Generic ESP32 DevKit V1 | Reserved `physical-003` node | Wi-Fi passed; unique profile built, not yet flashed |
 | `BME-HW611` | Generic HW-611 BME280 breakout | Initial physical sensor candidate | Quarantined; unsoldered header |
-| `BME-6PIN` | Pre-soldered six-pin BME280 breakout | Sensor on ESP32-B / `physical-001` | Local bring-up and Pi RAW persistence passed; collector pending |
+| `BME-6PIN` | Pre-soldered six-pin BME280 breakout | Sensor on ESP32-B / `physical-001` | Local and end-to-end RAW bring-up passed |
 | `AP-PRIMARY` | Spectrum-managed access point, exact model unknown | Primary 2.4 GHz experiment network | Active; ESP32-B association passed |
 | `AP-ALT` | Alternate Spectrum/Orbi access point, exact model unknown | Secondary Wi-Fi diagnostic network | Diagnostic use only |
 | `AP-HOTSPOT` | iPhone Personal Hotspot, exact phone model unknown | Independent 2.4 GHz WPA2 diagnostic network | Diagnostic use only |
@@ -44,7 +44,7 @@ The Pi passed dependency installation, Ruff, and 99 of 100 tests before the rema
 identified as a stale test monotonic timestamp; the corrected cross-platform suite later passed 103
 tests on the Mac, and the current suite passes 104 after the persistent-client shutdown regression
 was added. The real Mac-to-Pi-to-Mac RAW and AGGREGATED software rehearsal also passed. Physical
-BME280 readings have now been persisted on the Pi; physical forwarding to the Mac remains pending.
+BME280 readings have been persisted on the Pi and forwarded end to end to the Mac collector.
 
 ## ESP32 boards
 
@@ -52,8 +52,8 @@ BME280 readings have now been persisted on the Pi; physical forwarding to the Ma
 |---|---|---|---|
 | ESP32-A | `8c:94:df:45:c4:b4` | Quarantined; do not use for Wi-Fi experiments | Wi-Fi authentication hardware failure |
 | ESP32-B | `8c:94:df:46:52:98` | Active `physical-001` node | Wi-Fi bring-up passed |
-| ESP32-C | `8c:94:df:4d:2a:54` | Validated spare; do not operate as `physical-001` alongside ESP32-B | Wi-Fi bring-up passed |
-| ESP32-D | `58:2a:bd:74:3d:a8` | Validated spare; do not operate as `physical-001` alongside another board | Wi-Fi bring-up passed |
+| ESP32-C | `8c:94:df:4d:2a:54` | Reserved `physical-002` node | Wi-Fi passed; profile built, not yet flashed |
+| ESP32-D | `58:2a:bd:74:3d:a8` | Reserved `physical-003` node | Wi-Fi passed; profile built, not yet flashed |
 
 All four boards enumerated through a CP2102 USB-to-UART bridge as VID:PID `10c4:ea60` and
 `/dev/cu.usbserial-0001`. All reported an ESP32-D0WD-V3 revision 3.1, a 40 MHz crystal, and 4 MB
@@ -97,8 +97,10 @@ The Pi gateway was then started on `192.168.1.187:8662` with upstream disabled. 
 and reported successful NDJSON writes. The final summary contained 463 valid messages and 463
 persisted RAW records, with zero invalid, duplicate, out-of-order, or estimated-missing messages.
 One deliberate ESP32 reset was correctly classified as a sequence reset; the final sequence was
-`429`. This validates the physical sensor-to-Pi path, not Mac collector forwarding or scientific
-performance.
+`429`. A later end-to-end RAW rehearsal persisted and forwarded 812 of 812 physical records from
+the Pi and collected all 812 on the Mac, with matching 361,242 upstream application bytes and no
+invalid, truncated, or overlong messages. These are engineering validations, not scientific
+performance results.
 
 ## ESP32-C — validated spare
 
@@ -111,14 +113,13 @@ The driver reported one transient `AUTH_FAIL` during its internal first-connecti
 connected successfully. Gateway TCP attempts failed only because nothing was listening at
 `192.168.1.187:8662`. The sensor was absent, so BME280 validation remains pending.
 
-ESP32-C currently contains firmware configured as `physical-001`, but it is registered as an
-unassigned spare. Do not power it on concurrently with ESP32-B on the experiment network until it
-has a unique node ID and the assignment is recorded here; duplicate physical node IDs would make
-gateway records scientifically ambiguous.
+ESP32-C currently contains the older firmware configured as `physical-001`. Its reserved assignment
+is now `physical-002`, provided by PlatformIO environment `physical-node-002`, but that image has not
+yet been flashed. Do not power it on concurrently with ESP32-B on the experiment network until the
+unique profile has been uploaded and Serial confirms `Node ID: physical-002`; duplicate physical
+node IDs would make gateway records scientifically ambiguous.
 
-ESP32-C is the selected board for the pre-sensor TCP rehearsal. The last hardware identification
-during checkpoint preparation found ESP32-A attached for its off-breadboard retest, so the operator
-must physically reconnect ESP32-C and confirm MAC ending `2a:54` before starting that rehearsal.
+Confirm the attached station MAC ends in `2a:54` before uploading the ESP32-C profile.
 
 ## ESP32-D — validated spare
 
@@ -130,9 +131,11 @@ DHCP address `192.168.1.56`. The address is only the observed lease from this te
 
 The board attempted the configured gateway at `192.168.1.187:8662` and followed the bounded TCP
 retry schedule when the remote endpoint reset the connection. No BME280 was connected, so it
-emitted no sensor reading and does not constitute sensor validation. ESP32-D currently contains
-firmware configured as `physical-001`; do not operate it alongside another board using that node ID
-until a unique assignment is recorded.
+emitted no sensor reading and does not constitute sensor validation. ESP32-D currently contains the
+older firmware configured as `physical-001`. Its reserved assignment is `physical-003`, provided by
+PlatformIO environment `physical-node-003`, but that image has not yet been flashed. Do not operate
+it alongside ESP32-B until Serial confirms `Node ID: physical-003`; confirm the station MAC ends in
+`3d:a8` before uploading.
 
 ## Sensor hardware
 
@@ -153,8 +156,9 @@ installed header. It is wired to ESP32-B using 3.3 V, GPIO22 for SCL, GPIO21 for
 The Adafruit BME280 driver detected the device at `0x76`. Repeated local samples were stable and
 finite: approximately 24.7–25.1 °C, 48.5–50.5% relative humidity, and 1011.2–1011.3 hPa. No invalid
 reading or sensor reinitialization occurred during the bounded captures. A later engineering check
-persisted all 463 accepted physical RAW readings on the Pi gateway with upstream disabled. Mac
-collector delivery and scientific performance remain unvalidated.
+persisted all 463 accepted physical RAW readings on the Pi gateway with upstream disabled. A later
+bounded rehearsal delivered 812 of 812 records through the Pi to the Mac collector. Scientific
+performance remains unvalidated.
 
 ## Network devices used for diagnosis
 

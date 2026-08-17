@@ -4,14 +4,14 @@ A graduate Wireless Sensor Networks project for experimentally studying how edge
 changes bandwidth use, latency, and reliability as a hybrid network scales and communication
 degrades.
 
-The current implementation is **Phase 4: one physical-node ESP32 bring-up**. It provides a
+The current implementation is **Phase 4: physical-node ESP32 bring-up**. It provides a
 versioned sensor protocol, concurrent gateway and collector, immutable run manifests, persisted
 health/gateway events, independently accounted virtual generation, CPU/memory sampling,
 subprocess orchestration, evidence-driven analysis, a real Raspberry Pi software rehearsal, and
 host-tested ESP32/BME280 firmware logic. Three ESP32 boards have passed USB flash, Serial boot,
 Wi-Fi association, and DHCP; the initial board is quarantined for a repeatable Wi-Fi/RF failure.
-A pre-soldered BME280 connected to ESP32-B has passed local I2C/Serial validation and physical RAW
-readings have been persisted by the Pi gateway. Forwarding to the Mac collector remains pending.
+A pre-soldered BME280 connected to ESP32-B has passed local I2C/Serial validation, physical RAW
+persistence on the Pi, and bounded end-to-end forwarding to the Mac collector.
 
 ## Research question
 
@@ -25,7 +25,7 @@ or conclusions have been produced.
 ## Architecture
 
 ```text
-Physical node (ESP32 validated; sensor pending) Mac upstream collector
+Physical node (ESP32-B + BME280 validated)     Mac upstream collector
 BME280 -> ESP32 -- Wi-Fi/TCP --+                         ^
                                |                         | TCP/NDJSON
 Virtual nodes -- TCP ----------+-> Raspberry Pi gateway-+
@@ -297,13 +297,16 @@ source .venv/bin/activate
 pio --version
 pio test -d firmware -e native
 pio run -d firmware -e physical-node
+pio run -d firmware -e physical-node-001
+pio run -d firmware -e physical-node-002
+pio run -d firmware -e physical-node-003
 python -m pytest -q
 ruff check .
 git diff --check
 ```
 
 The native environment is test-only: use `pio test`, not `pio run`, for `-e native`. The current
-Python suite has 103 passing tests. Coverage includes firmware-emitter compatibility, protocol and
+Python suite has 104 passing tests. Coverage includes firmware-emitter compatibility, protocol and
 framing edge cases,
 malformed and abrupt clients, idle/size limits, callback isolation, concurrent virtual nodes,
 reconnection, sequence and liveness transitions, exclusive persistence, aggregation statistics,
@@ -331,9 +334,9 @@ Phase 4 evaluated four classic ESP32 DevKit V1 boards with CP2102 USB-to-UART br
 quarantined from Wi-Fi use; ESP32-B is the primary physical-node candidate; ESP32-C and ESP32-D are
 validated spares. PlatformIO board `esp32doit-devkit-v1` builds with Arduino and GNU C++17.
 Firmware explicitly assigns GPIO21 as SDA and GPIO22 as SCL, probes BME280 addresses `0x76` then
-`0x77`, and targets node
-`physical-001`. See [firmware/README.md](firmware/README.md) for the full contract, planned wiring,
-and checkpoint procedure. The complete physical device registry is maintained in
+`0x77`, and provides explicit build profiles for `physical-001`, `physical-002`, and
+`physical-003`. See [firmware/README.md](firmware/README.md) for the full contract, planned wiring,
+profile-to-board map, and checkpoint procedure. The complete physical device registry is maintained in
 [firmware/HARDWARE_INVENTORY.md](firmware/HARDWARE_INVENTORY.md).
 
 The HW-611 BME280 has an unsoldered header and must not be used. Its replacement pre-soldered module
@@ -365,13 +368,18 @@ cp firmware/include/secrets.example.hpp firmware/include/secrets.hpp
 ```
 
 Never commit `secrets.hpp`. Confirm that `wsn-edge` still has DHCP address `192.168.1.187` and its
-gateway is listening on port 8662, then build, upload, and monitor with the detected port:
+gateway is listening on port 8662, then select the profile matching the attached board, build,
+upload, and monitor with the detected port. For ESP32-B:
 
 ```bash
-pio run -d firmware -e physical-node
-pio run -d firmware -e physical-node -t upload --upload-port <PORT>
+pio run -d firmware -e physical-node-001
+pio run -d firmware -e physical-node-001 -t upload --upload-port <PORT>
 pio device monitor -d firmware --port <PORT> --baud 115200
 ```
+
+Use `physical-node-002` only for ESP32-C (MAC ending `2a:54`) and `physical-node-003` only for
+ESP32-D (MAC ending `3d:a8`). The original `physical-node` environment remains an alias for
+ESP32-B/`physical-001`. Confirm the station MAC before each upload.
 
 Expected Serial behavior is: boot at 115200, print `physical-001` and the Pi target, initialize I2C
 on GPIO21/GPIO22, probe `0x76` and `0x77`, report the BME280 absent, and repeat the probe every five
@@ -398,7 +406,9 @@ The local portion passed on ESP32-B on 2026-08-16: the firmware detected the BME
 reported stable finite samples near 25 °C, 49% relative humidity, and 1011 hPa. A subsequent
 engineering check persisted all 463 accepted physical RAW records on the Pi. The final summary
 reported zero invalid, duplicate, out-of-order, or estimated-missing messages and correctly
-recognized one deliberate ESP32 sequence reset. Mac collector forwarding remains pending.
+recognized one deliberate ESP32 sequence reset. A subsequent end-to-end RAW rehearsal persisted
+and forwarded 812 records on the Pi and collected all 812 on the Mac, with matching 361,242
+upstream application bytes and no invalid, overlong, or truncated messages.
 
 ## Experiments and results status
 
@@ -489,8 +499,10 @@ pyproject.toml           pytest and Ruff configuration
 
 The Raspberry Pi software path is validated as an engineering rehearsal, and ESP32-B, ESP32-C, and
 ESP32-D have passed flash and Wi-Fi/DHCP bring-up. ESP32-B plus the replacement BME280 has also
-passed local I2C/Serial validation and RAW persistence on the Pi gateway. The next action is a
-controlled RAW forwarding check to the Mac collector. Clock synchronization, real network
-impairment, multiple physical nodes, and the final experiment matrix remain later work. This
-repository does not yet claim complete collector delivery, a physical performance result, or
-physical one-way latency.
+passed local I2C/Serial validation and an end-to-end RAW rehearsal in which the Pi persisted and
+forwarded 812 records and the Mac collected all 812. Explicit build profiles now reserve ESP32-B as
+`physical-001`, ESP32-C as `physical-002`, and ESP32-D as `physical-003`; the latter two images are
+not yet flashed and neither spare has a BME280. The next action is to upload and verify those unique
+profiles one board at a time before concurrent physical-node use. Clock synchronization, real
+network impairment, additional sensors, and the final experiment matrix remain later work. This
+repository does not yet claim a physical performance result or physical one-way latency.

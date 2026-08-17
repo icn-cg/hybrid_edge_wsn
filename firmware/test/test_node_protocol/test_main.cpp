@@ -1,3 +1,4 @@
+#include "config.hpp"
 #include "node_protocol.hpp"
 
 #include <cmath>
@@ -34,6 +35,9 @@ void test_exact_protocol_record() {
 }
 
 void test_validation() {
+    check(
+        std::string(node_config::NODE_ID) == "physical-001",
+        "native/default configuration selects physical-001");
     check(hybrid_wsn::valid_node_id("physical-001"), "valid node ID");
     check(!hybrid_wsn::valid_node_id("-physical"), "leading punctuation rejected");
     check(!hybrid_wsn::valid_node_id("physical 001"), "space rejected");
@@ -57,7 +61,12 @@ void test_validation() {
         "out-of-range humidity rejected");
 
     const hybrid_wsn::RuntimeConfig valid{
-        "physical-001", "192.168.1.187", 8662, 1000, 1000, 30000};
+        node_config::NODE_ID,
+        node_config::GATEWAY_HOST,
+        node_config::GATEWAY_PORT,
+        node_config::SAMPLING_INTERVAL_MS,
+        node_config::RECONNECT_INITIAL_MS,
+        node_config::RECONNECT_MAX_MS};
     check(hybrid_wsn::valid_runtime_config(valid), "valid runtime configuration");
     const hybrid_wsn::RuntimeConfig invalid{
         "physical-001", "", 0, 0, 1000, 500};
