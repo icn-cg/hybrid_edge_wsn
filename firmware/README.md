@@ -4,10 +4,11 @@ This directory contains the Phase 4 firmware for one ESP32 plus BME280 node. The
 a classic ESP32 DevKit V1 with a CP2102 USB-to-UART bridge. The PlatformIO environment therefore uses
 PlatformIO's documented
 [`esp32doit-devkit-v1`](https://docs.platformio.org/en/latest/boards/espressif32/esp32doit-devkit-v1.html)
-board definition, the Arduino framework, and C++17. USB upload, Serial boot, Wi-Fi scan,
-association, and DHCP have passed on ESP32-B and ESP32-C; BME280 validation has not begun. The
-reproducible target environment pins Espressif 32 platform `7.0.1`, Arduino-ESP32 framework package
-`3.20017.241212`, and Adafruit BME280 library `2.3.0`.
+board definition, the Arduino framework, and C++17. USB upload, Serial boot, Wi-Fi association, and
+DHCP have passed on ESP32-B, ESP32-C, and ESP32-D. A pre-soldered BME280 on ESP32-B has passed local
+I2C/Serial validation and physical RAW persistence on the Pi; Mac collector delivery remains
+pending. The reproducible target environment pins Espressif 32 platform `7.0.1`, Arduino-ESP32
+framework package `3.20017.241212`, and Adafruit BME280 library `2.3.0`.
 
 All physical devices used or evaluated during bring-up—including compute hosts, access points,
 ESP32 boards, BME280 breakouts, and USB support hardware—are tracked in
@@ -246,10 +247,10 @@ to the current backoff interval and require another `Gateway TCP connected`. Sto
 and verify its fresh raw file and registry are also empty. This proves transport recovery only; it
 does not prove sensing, delivery of a `ReadingMessage`, or scientific performance.
 
-## Deferred BME280 bring-up
+## BME280 bring-up
 
-Do not begin this section until the replacement sensor is available. No BME280 is currently
-connected or validated, and no physical sensor data has been produced.
+Sections A through C passed on ESP32-B on 2026-08-16. Section D remains pending, and all bring-up
+checks must be treated as engineering validation rather than a scientific experiment.
 
 ### A. Wire while powered off
 
@@ -273,12 +274,26 @@ plausible (typically near 1000 hPa, with altitude and weather effects). Stop if 
 outside firmware limits, or clearly implausible. Do not reinterpret a BMP280 lacking humidity as a
 working BME280.
 
+Observed on ESP32-B: detection at `0x76`, approximately 24.7–25.1 °C, 48.5–50.5% relative humidity,
+and 1011.2–1011.3 hPa across repeated samples, with no invalid-reading or reinitialization message.
+
 ### C. Send the physical node to the Pi
 
 Confirm `wsn-edge` still owns `192.168.1.187`, start its gateway listening on port 8662, then reboot
 the ESP32. Serial should show Wi-Fi, its assigned IP, the configured gateway target, and
 `Gateway TCP connected`. On the Pi verify accepted records have `node_id=physical-001`,
 `node_kind=physical`, and sequences `0`, `1`, `2`, ... with no schema rejection.
+
+This passed with upstream disabled: the Pi accepted 463 valid physical messages and persisted all
+463 RAW records in a fresh temporary directory. The final summary reported zero invalid messages,
+duplicates, out-of-order messages, and estimated missing messages. It correctly recognized one
+deliberate ESP32 sequence reset, and the final sequence was `429`.
+
+A persistent-client shutdown defect was exposed during this bring-up: the gateway awaited final
+server closure before closing the active ESP32 stream. The corrected order is covered by a host
+regression test. A follow-up Pi rehearsal sent SIGTERM while ESP32-B remained connected; the gateway
+exited and wrote its summary without resetting the ESP32, preserving all 16 accepted records with
+zero invalid, duplicate, out-of-order, or estimated-missing messages.
 
 ### D. Validate end to end in RAW mode
 
@@ -298,7 +313,6 @@ IN_ORDER.
 - Clone boards marked DEVKITV1 can differ in flash population and automatic-reset circuitry despite
   sharing the common form factor; the first upload is the definitive check.
 - A charge-only USB-C cable or missing/incompatible CP210x VCP driver can hide the serial port.
-- The planned replacement generic BME280 board's regulator, pull-ups, soldering, and even sensor
-  identity are not yet physically verified. Keep it at 3.3 V and validate humidity as well as chip
-  detection after it arrives.
+- The generic BME280 breakout passed local detection and sample validation at 3.3 V, but its
+  long-duration stability and end-to-end delivery through the Pi and collector remain unverified.
 - The Pi address is DHCP-assigned and can change; verify it before each bring-up.

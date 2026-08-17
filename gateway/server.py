@@ -144,7 +144,6 @@ class GatewayServer:
         server, self._server = self._server, None
         if server is not None:
             server.close()
-            await server.wait_closed()
 
         if self._liveness_task is not None:
             self._liveness_task.cancel()
@@ -164,6 +163,10 @@ class GatewayServer:
         tasks = tuple(task for task in self._client_tasks if task is not current)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if server is not None:
+            # Python 3.13 waits for active connections in Server.wait_closed().
+            # Close client streams first so persistent nodes cannot deadlock shutdown.
+            await server.wait_closed()
         LOGGER.info("gateway stopped")
 
     async def _accept_client(

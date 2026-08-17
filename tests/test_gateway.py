@@ -235,6 +235,23 @@ async def test_idle_timeout_disconnects_silent_client() -> None:
     assert gateway.registry.nodes == {}
 
 
+async def test_stop_closes_persistent_client_before_waiting_for_server() -> None:
+    gateway = GatewayServer(port=0, client_idle_timeout=30.0)
+    await gateway.start()
+    reader, writer = await asyncio.open_connection("127.0.0.1", gateway.bound_port)
+    try:
+        await wait_until(lambda: gateway.stats.active_connections == 1)
+
+        await asyncio.wait_for(gateway.stop(), timeout=1.0)
+
+        assert await asyncio.wait_for(reader.read(), timeout=0.5) == b""
+        assert gateway.stats.active_connections == 0
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await gateway.stop()
+
+
 async def test_handler_exception_does_not_block_other_clients() -> None:
     received: list[SensorMessage] = []
 

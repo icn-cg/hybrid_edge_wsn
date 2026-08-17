@@ -13,12 +13,13 @@ as DHCP addresses and serial-device paths are observations, not permanent identi
 | `ESP32-A` | Generic ESP32 DevKit V1 | Initial physical-node candidate | Quarantined; Wi-Fi hardware failure |
 | `ESP32-B` | Generic ESP32 DevKit V1 | Active `physical-001` node | Wi-Fi bring-up passed |
 | `ESP32-C` | Generic ESP32 DevKit V1 | Validated spare; no unique node ID assigned | Wi-Fi bring-up passed |
+| `ESP32-D` | Generic ESP32 DevKit V1 | Validated spare; no unique node ID assigned | Wi-Fi bring-up passed |
 | `BME-HW611` | Generic HW-611 BME280 breakout | Initial physical sensor candidate | Quarantined; unsoldered header |
-| `BME-6PIN` | Planned pre-soldered six-pin BME280 breakout | Physical sensor for `physical-001` | Awaiting availability; not connected or validated |
+| `BME-6PIN` | Pre-soldered six-pin BME280 breakout | Sensor on ESP32-B / `physical-001` | Local bring-up and Pi RAW persistence passed; collector pending |
 | `AP-PRIMARY` | Spectrum-managed access point, exact model unknown | Primary 2.4 GHz experiment network | Active; ESP32-B association passed |
 | `AP-ALT` | Alternate Spectrum/Orbi access point, exact model unknown | Secondary Wi-Fi diagnostic network | Diagnostic use only |
 | `AP-HOTSPOT` | iPhone Personal Hotspot, exact phone model unknown | Independent 2.4 GHz WPA2 diagnostic network | Diagnostic use only |
-| `USB-CABLE-1` | Anker-branded USB data/power cable, exact model unknown | ESP32 power, flash, and Serial | Upload validated with all three ESP32 boards |
+| `USB-CABLE-1` | Anker-branded USB data/power cable, exact model unknown | ESP32 power, flash, and Serial | Upload validated with all four ESP32 boards |
 
 Software-only virtual nodes are not physical devices and are intentionally excluded from this
 registry.
@@ -41,8 +42,9 @@ and Python 3.13.5. It hosts the edge gateway. DHCP address `192.168.1.187` was o
 
 The Pi passed dependency installation, Ruff, and 99 of 100 tests before the remaining failure was
 identified as a stale test monotonic timestamp; the corrected cross-platform suite later passed 103
-tests on the Mac. The real Mac-to-Pi-to-Mac RAW and AGGREGATED software rehearsal also passed. This
-registry does not yet claim a physical BME280 reading traversed the Pi.
+tests on the Mac, and the current suite passes 104 after the persistent-client shutdown regression
+was added. The real Mac-to-Pi-to-Mac RAW and AGGREGATED software rehearsal also passed. Physical
+BME280 readings have now been persisted on the Pi; physical forwarding to the Mac remains pending.
 
 ## ESP32 boards
 
@@ -51,8 +53,9 @@ registry does not yet claim a physical BME280 reading traversed the Pi.
 | ESP32-A | `8c:94:df:45:c4:b4` | Quarantined; do not use for Wi-Fi experiments | Wi-Fi authentication hardware failure |
 | ESP32-B | `8c:94:df:46:52:98` | Active `physical-001` node | Wi-Fi bring-up passed |
 | ESP32-C | `8c:94:df:4d:2a:54` | Validated spare; do not operate as `physical-001` alongside ESP32-B | Wi-Fi bring-up passed |
+| ESP32-D | `58:2a:bd:74:3d:a8` | Validated spare; do not operate as `physical-001` alongside another board | Wi-Fi bring-up passed |
 
-All three boards enumerated through a CP2102 USB-to-UART bridge as VID:PID `10c4:ea60` and
+All four boards enumerated through a CP2102 USB-to-UART bridge as VID:PID `10c4:ea60` and
 `/dev/cu.usbserial-0001`. All reported an ESP32-D0WD-V3 revision 3.1, a 40 MHz crystal, and 4 MB
 flash. Those shared USB and chip attributes are not unique board identifiers.
 
@@ -86,6 +89,17 @@ The board then attempted the configured gateway at `192.168.1.187:8662`. TCP ret
 because no gateway process was listening on port 8662 during this comparison. BME280 validation was
 also not part of the board comparison because the sensor was absent.
 
+On 2026-08-16, the replacement BME280 was subsequently wired to ESP32-B at 3.3 V. The clean default
+firmware detected it at I2C address `0x76` and produced stable finite local samples. No gateway was
+available, so the firmware correctly left the samples unsent and kept sequence at `0`.
+
+The Pi gateway was then started on `192.168.1.187:8662` with upstream disabled. ESP32-B connected
+and reported successful NDJSON writes. The final summary contained 463 valid messages and 463
+persisted RAW records, with zero invalid, duplicate, out-of-order, or estimated-missing messages.
+One deliberate ESP32 reset was correctly classified as a sequence reset; the final sequence was
+`429`. This validates the physical sensor-to-Pi path, not Mac collector forwarding or scientific
+performance.
+
 ## ESP32-C — validated spare
 
 On 2026-08-16, the third board was flashed with the same project `physical-node` firmware. Its
@@ -106,6 +120,20 @@ ESP32-C is the selected board for the pre-sensor TCP rehearsal. The last hardwar
 during checkpoint preparation found ESP32-A attached for its off-breadboard retest, so the operator
 must physically reconnect ESP32-C and confirm MAC ending `2a:54` before starting that rehearsal.
 
+## ESP32-D — validated spare
+
+On 2026-08-16, this newly acquired board was identified as an ESP32-D0WD-V3 revision 3.1 with a
+40 MHz crystal and station MAC `58:2a:bd:74:3d:a8`. The existing `esp32doit-devkit-v1` target flashed
+successfully and the uploaded image passed hash verification. The firmware then booted, initialized
+I2C, handled the absent BME280 safely, associated with the configured Wi-Fi network, and obtained
+DHCP address `192.168.1.56`. The address is only the observed lease from this test.
+
+The board attempted the configured gateway at `192.168.1.187:8662` and followed the bounded TCP
+retry schedule when the remote endpoint reset the connection. No BME280 was connected, so it
+emitted no sensor reading and does not constitute sensor validation. ESP32-D currently contains
+firmware configured as `physical-001`; do not operate it alongside another board using that node ID
+until a unique assignment is recorded.
+
 ## Sensor hardware
 
 ### BME-HW611 — quarantined
@@ -115,16 +143,18 @@ for physical validation because intermittent header contact would make I2C evide
 not use it for experiment data unless the header is properly soldered and the board is independently
 requalified.
 
-### BME-6PIN — awaiting availability and validation
+### BME-6PIN — local bring-up validated
 
-The planned replacement is a generic pre-soldered six-pin breakout labeled for `VCC`, `GND`, `SCL`,
-`SDA`, `CSB`, and `SDO`. It is not connected and no physical sample has been produced. Planned I2C
-wiring uses 3.3 V, GPIO22 for SCL, GPIO21 for SDA, CSB tied to 3.3 V, and SDO tied to ground for
-address `0x76`. Its regulator, pull-ups, soldering, actual sensor identity, and measurements must all
-remain unclaimed until the device is available and a successful physical bring-up is recorded.
+The replacement received on 2026-08-16 is a generic pre-soldered six-pin breakout labeled for
+`VCC`, `GND`, `SCL`, `SDA`, `CSB`, and `SDO`. A visual inspection confirms the expected labels and
+installed header. It is wired to ESP32-B using 3.3 V, GPIO22 for SCL, GPIO21 for SDA, CSB tied to
+3.3 V, and SDO tied to ground for address `0x76`.
 
-At this pre-sensor checkpoint, no BME280 has been validated and the project has produced no physical
-sensor data.
+The Adafruit BME280 driver detected the device at `0x76`. Repeated local samples were stable and
+finite: approximately 24.7–25.1 °C, 48.5–50.5% relative humidity, and 1011.2–1011.3 hPa. No invalid
+reading or sensor reinitialization occurred during the bounded captures. A later engineering check
+persisted all 463 accepted physical RAW readings on the Pi gateway with upstream disabled. Mac
+collector delivery and scientific performance remain unvalidated.
 
 ## Network devices used for diagnosis
 
@@ -145,10 +175,10 @@ hardware identifiers are unknown because administrative access was unavailable d
 
 ## USB and identification notes
 
-All three ESP32 boards enumerated through an onboard CP2102 USB-to-UART bridge as VID:PID `10c4:ea60`,
+All four ESP32 boards enumerated through an onboard CP2102 USB-to-UART bridge as VID:PID `10c4:ea60`,
 USB serial string `0001`, and `/dev/cu.usbserial-0001`. These values repeated across boards and are
 therefore unsuitable as inventory keys. The Anker-branded USB cable successfully powered, flashed,
-and monitored all three boards; no separate cable serial number is available.
+and monitored all four boards; no separate cable serial number is available.
 
 Use the ESP32 station MAC address to distinguish the ESP32 boards. For other device classes,
 prefer a stable hostname or explicitly assigned inventory label. Do not put account credentials,
