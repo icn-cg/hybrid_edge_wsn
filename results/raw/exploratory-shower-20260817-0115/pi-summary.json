@@ -1,0 +1,134 @@
+{
+  "events": {
+    "gateway": {
+      "enqueued": 10,
+      "queue_full_drops": 0,
+      "written": 10
+    },
+    "health": {
+      "enqueued": 3,
+      "queue_full_drops": 0,
+      "written": 3
+    }
+  },
+  "gateway": {
+    "active_connections": 0,
+    "connections_accepted": 3,
+    "idle_disconnects": 0,
+    "invalid_messages": 0,
+    "malformed_json": 0,
+    "overlong_messages": 0,
+    "rejected_readings": 0,
+    "schema_rejections": 0,
+    "sensor_bytes": 3496032,
+    "truncated_messages": 0,
+    "valid_messages": 18718
+  },
+  "metrics": {
+    "samples_written": 12425
+  },
+  "registry": {
+    "physical-001": {
+      "active_connections": 0,
+      "connected": false,
+      "duplicates": 0,
+      "estimated_messages_missing": 0,
+      "first_seen_ms": 1786954509789,
+      "health_status": "ONLINE",
+      "last_seen_monotonic_ns": 171829164105609,
+      "last_seen_ms": 1786960751808,
+      "last_sequence": 6242,
+      "latest_sensor_values": {
+        "humidity_pct": 87.937,
+        "pressure_hpa": 1013.057,
+        "temperature_c": 18.97
+      },
+      "messages_received": 6240,
+      "node_id": "physical-001",
+      "node_kind": "physical",
+      "out_of_order": 0,
+      "sequence_resets": 0,
+      "transitions": [
+        {
+          "current": "ONLINE",
+          "node_id": "physical-001",
+          "previous": null,
+          "timestamp_ms": 1786954509789
+        }
+      ]
+    },
+    "physical-002": {
+      "active_connections": 0,
+      "connected": false,
+      "duplicates": 0,
+      "estimated_messages_missing": 0,
+      "first_seen_ms": 1786954509950,
+      "health_status": "ONLINE",
+      "last_seen_monotonic_ns": 171828584535202,
+      "last_seen_ms": 1786960751228,
+      "last_sequence": 6289,
+      "latest_sensor_values": {
+        "humidity_pct": 62.402,
+        "pressure_hpa": 1013.087,
+        "temperature_c": 22.16
+      },
+      "messages_received": 6239,
+      "node_id": "physical-002",
+      "node_kind": "physical",
+      "out_of_order": 0,
+      "sequence_resets": 0,
+      "transitions": [
+        {
+          "current": "ONLINE",
+          "node_id": "physical-002",
+          "previous": null,
+          "timestamp_ms": 1786954509950
+        }
+      ]
+    },
+    "physical-003": {
+      "active_connections": 0,
+      "connected": false,
+      "duplicates": 0,
+      "estimated_messages_missing": 0,
+      "first_seen_ms": 1786954509954,
+      "health_status": "ONLINE",
+      "last_seen_monotonic_ns": 171828818490459,
+      "last_seen_ms": 1786960751462,
+      "last_sequence": 6291,
+      "latest_sensor_values": {
+        "humidity_pct": 61.577,
+        "pressure_hpa": 1012.916,
+        "temperature_c": 23.44
+      },
+      "messages_received": 6239,
+      "node_id": "physical-003",
+      "node_kind": "physical",
+      "out_of_order": 0,
+      "sequence_resets": 0,
+      "transitions": [
+        {
+          "current": "ONLINE",
+          "node_id": "physical-003",
+          "previous": null,
+          "timestamp_ms": 1786954509954
+        }
+      ]
+    }
+  },
+  "storage": {
+    "bytes_written": 6091343,
+    "records_enqueued": 18718,
+    "records_written": 18718
+  },
+  "upstream": {
+    "connection_attempts": 1,
+    "connection_failures": 0,
+    "queue_full_drops": 0,
+    "readings_enqueued": 18718,
+    "records_abandoned_on_shutdown": 0,
+    "send_failures": 0,
+    "upstream_bytes": 8353128,
+    "upstream_messages": 18718
+  }
+}

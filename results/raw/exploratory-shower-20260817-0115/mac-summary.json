@@ -1,0 +1,9 @@
+{
+  "active_connections": 0,
+  "bytes_received": 8353128,
+  "connections_accepted": 1,
+  "invalid_messages": 0,
+  "messages_received": 18718,
+  "overlong_messages": 0,
+  "truncated_messages": 0
+}

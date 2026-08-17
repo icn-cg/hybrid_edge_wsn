@@ -1,0 +1,11 @@
+timestamp_ms,source,event_type,node_id,details_json
+1786954509787,gateway,connection_accepted,,"{""peer"":""('192.168.1.55', 55294)""}"
+1786954509789,gateway,connection_opened,physical-001,{}
+1786954509804,upstream,collector_connected,,{}
+1786954509928,gateway,connection_accepted,,"{""peer"":""('192.168.1.56', 62443)""}"
+1786954509946,gateway,connection_accepted,,"{""peer"":""('192.168.1.191', 53540)""}"
+1786954509950,gateway,connection_opened,physical-002,{}
+1786954509954,gateway,connection_opened,physical-003,{}
+1786960752085,gateway,connection_closed,physical-002,{}
+1786960752085,gateway,connection_closed,physical-003,{}
+1786960752085,gateway,connection_closed,physical-001,{}

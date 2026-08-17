@@ -11,7 +11,10 @@ subprocess orchestration, evidence-driven analysis, a real Raspberry Pi software
 host-tested ESP32/BME280 firmware logic. Three ESP32 boards have passed USB flash, Serial boot,
 Wi-Fi association, and DHCP; the initial board is quarantined for a repeatable Wi-Fi/RF failure.
 A pre-soldered BME280 connected to ESP32-B has passed local I2C/Serial validation, physical RAW
-persistence on the Pi, and bounded end-to-end forwarding to the Mac collector.
+persistence on the Pi, and bounded end-to-end forwarding to the Mac collector. Three distinct
+BME280 breakouts are permanently paired with ESP32-B, ESP32-C, and ESP32-D, and each pair has now
+passed a bounded end-to-end RAW check under its unique `physical-001`, `physical-002`, or
+`physical-003` profile.
 
 ## Research question
 
@@ -331,8 +334,8 @@ aggregation delay is not hidden.
 ## Hardware and PlatformIO status
 
 Phase 4 evaluated four classic ESP32 DevKit V1 boards with CP2102 USB-to-UART bridges. ESP32-A is
-quarantined from Wi-Fi use; ESP32-B is the primary physical-node candidate; ESP32-C and ESP32-D are
-validated spares. PlatformIO board `esp32doit-devkit-v1` builds with Arduino and GNU C++17.
+quarantined from Wi-Fi use; ESP32-B is `physical-001`; ESP32-C is `physical-002`; and ESP32-D is
+`physical-003`. PlatformIO board `esp32doit-devkit-v1` builds with Arduino and GNU C++17.
 Firmware explicitly assigns GPIO21 as SDA and GPIO22 as SCL, probes BME280 addresses `0x76` then
 `0x77`, and provides explicit build profiles for `physical-001`, `physical-002`, and
 `physical-003`. See [firmware/README.md](firmware/README.md) for the full contract, planned wiring,
@@ -498,11 +501,12 @@ pyproject.toml           pytest and Ruff configuration
 ## Current limitations and next milestone
 
 The Raspberry Pi software path is validated as an engineering rehearsal, and ESP32-B, ESP32-C, and
-ESP32-D have passed flash and Wi-Fi/DHCP bring-up. ESP32-B plus the replacement BME280 has also
-passed local I2C/Serial validation and an end-to-end RAW rehearsal in which the Pi persisted and
-forwarded 812 records and the Mac collected all 812. Explicit build profiles now reserve ESP32-B as
-`physical-001`, ESP32-C as `physical-002`, and ESP32-D as `physical-003`; the latter two images are
-not yet flashed and neither spare has a BME280. The next action is to upload and verify those unique
-profiles one board at a time before concurrent physical-node use. Clock synchronization, real
-network impairment, additional sensors, and the final experiment matrix remain later work. This
-repository does not yet claim a physical performance result or physical one-way latency.
+ESP32-D have passed flash, Wi-Fi/DHCP, BME280, and bounded end-to-end RAW bring-up. ESP32-B's longer
+rehearsal delivered 812 of 812 records, and ESP32-D's independent check delivered 41 of 41. A later
+55-second concurrent check used the unique `physical-001`, `physical-002`, and `physical-003`
+profiles and delivered all 106 Pi records to the Mac collector with exact byte parity and no
+reported protocol, sequence, queue, storage, or upstream failures. That short run contained only
+two `physical-001` readings and is an engineering connectivity check, not a balanced performance
+trial. Clock synchronization, real network impairment, long-duration balanced multi-node
+validation, and the final experiment matrix remain later work. This repository does not yet claim
+a physical performance result or physical one-way latency.

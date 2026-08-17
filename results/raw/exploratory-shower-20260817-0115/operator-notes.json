@@ -1,0 +1,44 @@
+{
+  "run_id": "exploratory-shower-20260817-0115",
+  "classification": "exploratory engineering measurement cycle; not a scientific performance run",
+  "timezone": "America/Los_Angeles",
+  "evidence_interval": {
+    "first_gateway_record": "2026-08-17T01:15:09.789-07:00",
+    "last_gateway_record": "2026-08-17T02:59:11.808-07:00",
+    "duration_seconds": 6242.019
+  },
+  "placements": {
+    "physical-001": "ESP32-B/BME-B outside on balcony",
+    "physical-002": "ESP32-C/BME-C in room near Mac/laptop",
+    "physical-003": "ESP32-D/BME-D in bathroom, outside shower enclosure"
+  },
+  "operator_events": [
+    {
+      "event": "shower_on",
+      "local_time": "2026-08-17T01:27:00-07:00",
+      "precision": "approximate; reported after event"
+    },
+    {
+      "event": "shower_off",
+      "local_time": "2026-08-17T02:22:00-07:00",
+      "precision": "approximate; reported after event"
+    },
+    {
+      "event": "bathroom_door_opened_toward_physical-002",
+      "local_time": "2026-08-17T02:50:42-07:00",
+      "precision": "assistant receipt timestamp; operator said now"
+    }
+  ],
+  "context": [
+    "The shower door remained closed initially, delaying steam movement from the shower enclosure to physical-003.",
+    "The bathroom door opened toward the room containing physical-002 during recovery.",
+    "All evidence files use fresh paths and do not overwrite prior runs."
+  ],
+  "transport_result": {
+    "pi_valid_and_persisted_records": 18718,
+    "pi_forwarded_records": 18718,
+    "mac_collected_records": 18718,
+    "pi_and_mac_upstream_bytes": 8353128,
+    "sequence_or_transport_errors": 0
+  }
+}

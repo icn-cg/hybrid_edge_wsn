@@ -1,0 +1,4 @@
+timestamp_ms,node_id,node_kind,old_state,new_state,reason,last_seen_ms,last_sequence
+1786954509789,physical-001,physical,,ONLINE,initial_message,1786954509789,3
+1786954509950,physical-002,physical,,ONLINE,initial_message,1786954509950,51
+1786954509954,physical-003,physical,,ONLINE,initial_message,1786954509954,53

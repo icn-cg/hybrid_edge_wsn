@@ -1,0 +1,3 @@
+# Preserve captured evidence byte-for-byte and avoid rendering large raw files as source diffs.
+*.csv -diff -text
+*.ndjson -diff -text

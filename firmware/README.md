@@ -5,10 +5,14 @@ a classic ESP32 DevKit V1 with a CP2102 USB-to-UART bridge. The PlatformIO envir
 PlatformIO's documented
 [`esp32doit-devkit-v1`](https://docs.platformio.org/en/latest/boards/espressif32/esp32doit-devkit-v1.html)
 board definition, the Arduino framework, and C++17. USB upload, Serial boot, Wi-Fi association, and
-DHCP have passed on ESP32-B, ESP32-C, and ESP32-D. A pre-soldered BME280 on ESP32-B has passed local
-I2C/Serial validation and physical RAW delivery through the Pi to the Mac collector. The
-reproducible target environment pins Espressif 32 platform `7.0.1`, Arduino-ESP32
+DHCP have passed on ESP32-B, ESP32-C, and ESP32-D. Each board's permanently paired pre-soldered
+BME280 has passed bounded physical RAW delivery through the Pi to the Mac collector under its unique
+node profile. The reproducible target environment pins Espressif 32 platform `7.0.1`, Arduino-ESP32
 framework package `3.20017.241212`, and Adafruit BME280 library `2.3.0`.
+
+Three distinct BME280 breakouts are permanently paired with ESP32-B, ESP32-C, and ESP32-D. Bosch
+does not provide a usable unique per-sensor serial number, so the hardware inventory identifies each
+sensor by its fixed ESP32 pairing. Do not move sensors between boards without updating that registry.
 
 All physical devices used or evaluated during bring-up—including compute hosts, access points,
 ESP32 boards, BME280 breakouts, and USB support hardware—are tracked in
