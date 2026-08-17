@@ -16,6 +16,7 @@ from experiments.config import ExperimentConfig
 from experiments.manifest import (
     RunArtifacts,
     build_manifest,
+    git_context,
     new_run_id,
     write_json_exclusive,
 )
@@ -57,6 +58,13 @@ class ExperimentRunner:
                 "the local subprocess runner supports virtual nodes only; "
                 "physical_node_count must be zero"
             )
+        if config.run_classification == "controlled_final":
+            _commit, dirty, status = git_context(self.repository)
+            if dirty:
+                raise ValueError(
+                    "controlled final runs require a clean tracked worktree: "
+                    + "; ".join(status)
+                )
         gateway_port = config.gateway_port or _free_port()
         collector_port = config.collector_port or _free_port()
         while collector_port == gateway_port:
@@ -123,7 +131,7 @@ class ExperimentRunner:
             await _stop_child(collector)
             _ensure_success(gateway.name, gateway.process.returncode)
             _ensure_success(collector.name, collector.process.returncode)
-            status = "complete"
+            status = "success"
         except asyncio.CancelledError:
             status = "interrupted"
             error = "runner task cancelled"
@@ -398,6 +406,8 @@ async def _run_cli(args: argparse.Namespace) -> list[RunArtifacts]:
             drop_probability=args.drop_probability,
             artificial_delay_ms=args.artificial_delay_ms,
             random_seed=args.seed + repetition,
+            base_seed=args.seed,
+            repetition_index=repetition,
             expected_interval_seconds=args.sampling_interval_ms / 1_000,
             liveness_check_interval_seconds=min(
                 0.5, args.sampling_interval_ms / 2_000

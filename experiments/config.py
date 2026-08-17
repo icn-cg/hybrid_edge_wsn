@@ -38,6 +38,13 @@ class ExperimentConfig(BaseModel):
     metrics_interval_seconds: float = Field(default=0.5, gt=0)
     failure_at_seconds: float | None = None
     recovery_at_seconds: float | None = None
+    campaign_id: str | None = None
+    condition_id: str | None = None
+    repetition_index: int = Field(default=0, ge=0)
+    base_seed: int = 662
+    run_classification: Literal["engineering_rehearsal", "controlled_final"] = (
+        "engineering_rehearsal"
+    )
 
     @model_validator(mode="after")
     def validate_relationships(self) -> ExperimentConfig:
@@ -63,4 +70,12 @@ class ExperimentConfig(BaseModel):
             or self.recovery_at_seconds >= self.duration_seconds
         ):
             raise ValueError("recovery must follow failure inside measurement interval")
+        if (self.campaign_id is None) != (self.condition_id is None):
+            raise ValueError("campaign_id and condition_id must be supplied together")
+        if self.campaign_id is not None and self.random_seed != (
+            self.base_seed + self.repetition_index
+        ):
+            raise ValueError("campaign random_seed must equal base_seed + repetition_index")
+        if self.run_classification == "controlled_final" and self.campaign_id is None:
+            raise ValueError("controlled final runs require campaign and condition identifiers")
         return self

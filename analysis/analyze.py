@@ -242,6 +242,7 @@ def analyze_run(
         **_resilience_metrics(loaded, readings),
         "warnings": warnings,
     }
+    result["scientific_admission"] = _scientific_admission(loaded, result)
     output_dir = Path(processed_root) / str(loaded.manifest["run_id"])
     output_dir.mkdir(parents=True, exist_ok=False)
     write_json_exclusive(output_dir / "metrics.json", result)
@@ -252,6 +253,66 @@ def analyze_run(
     for warning in warnings:
         print(f"warning: {warning}", file=sys.stderr)
     return result, output_dir
+
+
+def _scientific_admission(
+    loaded: LoadedRun, metrics: dict[str, Any]
+) -> dict[str, Any]:
+    """Evaluate the explicit final-run gates without deleting failed evidence."""
+
+    gateway = loaded.gateway_summary
+    gateway_protocol = gateway.get("gateway", {})
+    upstream = gateway.get("upstream", {})
+    storage = gateway.get("storage", {})
+    events = gateway.get("events", {})
+    collector = loaded.run_summary.get("collector") or {}
+    invalid_counters = {
+        "gateway_invalid_messages": int(gateway_protocol.get("invalid_messages", 0)),
+        "gateway_malformed_json": int(gateway_protocol.get("malformed_json", 0)),
+        "gateway_rejected_readings": int(gateway_protocol.get("rejected_readings", 0)),
+        "gateway_schema_rejections": int(gateway_protocol.get("schema_rejections", 0)),
+        "gateway_overlong_messages": int(gateway_protocol.get("overlong_messages", 0)),
+        "gateway_truncated_messages": int(gateway_protocol.get("truncated_messages", 0)),
+        "collector_invalid_messages": int(collector.get("invalid_messages", 0)),
+        "collector_overlong_messages": int(collector.get("overlong_messages", 0)),
+        "collector_truncated_messages": int(collector.get("truncated_messages", 0)),
+        "gateway_event_queue_drops": int(
+            events.get("gateway", {}).get("queue_full_drops", 0)
+        ),
+        "health_event_queue_drops": int(
+            events.get("health", {}).get("queue_full_drops", 0)
+        ),
+    }
+    checks = {
+        "run_summary_status_success": loaded.run_summary.get("status") == "success",
+        "run_manifest_clean": not bool(loaded.manifest.get("git_dirty")),
+        "analysis_worktree_clean": not bool(metrics["analysis_git_dirty"]),
+        "component_summaries_present": bool(gateway) and bool(collector),
+        "no_upstream_queue_full_drops": int(upstream.get("queue_full_drops", 0)) == 0,
+        "no_records_abandoned_on_shutdown": int(
+            upstream.get("records_abandoned_on_shutdown", 0)
+        )
+        == 0,
+        "no_invalid_evidence_counters": not any(invalid_counters.values()),
+        "storage_records_complete": int(storage.get("records_enqueued", -1))
+        == int(storage.get("records_written", -2)),
+        "collector_message_parity": int(upstream.get("upstream_messages", -1))
+        == int(collector.get("messages_received", -2)),
+        "collector_byte_parity": int(upstream.get("upstream_bytes", -1))
+        == int(collector.get("bytes_received", -2)),
+        "delivery_ratio_valid": bool(metrics["delivery_ratio_valid"]),
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    return {
+        "passed": not failed,
+        "failed_checks": failed,
+        "checks": checks,
+        "invalid_evidence_counters": invalid_counters,
+        "policy": (
+            "Failed evidence remains preserved but is excluded from final comparisons; "
+            "rerun the same condition into a new exclusive run directory."
+        ),
+    }
 
 
 def load_run(run_dir: str | Path) -> LoadedRun:
@@ -295,8 +356,8 @@ def load_run(run_dir: str | Path) -> LoadedRun:
         raise AnalysisError("unsupported run summary schema")
     if run_summary.get("run_id") != manifest.get("run_id"):
         raise AnalysisError("run summary does not match manifest run_id")
-    if run_summary.get("status") != "complete":
-        raise AnalysisError("run is not complete")
+    if run_summary.get("status") not in {"complete", "success"}:
+        raise AnalysisError("run is not successful")
     child_statuses = run_summary.get("children")
     if not isinstance(child_statuses, dict) or set(child_statuses) != {
         "collector",

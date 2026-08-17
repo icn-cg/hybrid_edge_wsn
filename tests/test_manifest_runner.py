@@ -80,13 +80,13 @@ def test_unique_run_directory_and_exclusive_manifest(tmp_path: Path) -> None:
         write_json_exclusive(first.manifest, {"run_id": "overwrite"})
 
 
-async def test_short_runner_run_produces_complete_evidence(tmp_path: Path) -> None:
+async def test_short_runner_run_produces_successful_evidence(tmp_path: Path) -> None:
     runner = ExperimentRunner(results_root=tmp_path)
     artifacts = await runner.run_once(config())
 
     summary = json.loads(artifacts.run_summary.read_text())
     manifest = json.loads(artifacts.manifest.read_text())
-    assert summary["status"] == "complete"
+    assert summary["status"] == "success"
     assert set(summary["children"].values()) == {0}
     assert manifest["git_commit"]
     for path in (
@@ -152,3 +152,27 @@ async def test_local_runner_rejects_unstarted_physical_nodes(tmp_path: Path) -> 
         )
 
     assert not tuple(tmp_path.iterdir())
+
+
+async def test_controlled_final_runner_rejects_dirty_worktree(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    git(repository, "init")
+    git(repository, "config", "user.name", "Controlled Test")
+    git(repository, "config", "user.email", "controlled@example.invalid")
+    (repository / "tracked.txt").write_text("clean\n")
+    git(repository, "add", "tracked.txt")
+    git(repository, "commit", "-m", "clean fixture")
+    (repository / "untracked.txt").write_text("dirty\n")
+    runner = ExperimentRunner(results_root=tmp_path / "results", repository=repository)
+
+    with pytest.raises(ValueError, match="clean tracked worktree"):
+        await runner.run_once(
+            config(
+                campaign_id="final-v1",
+                condition_id="scale-n005-raw",
+                run_classification="controlled_final",
+            )
+        )
+
+    assert not (tmp_path / "results").exists()

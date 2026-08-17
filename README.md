@@ -163,9 +163,14 @@ run_summary.json           overall status, child exits, config, and component su
 Repeat trials with `--repetitions 3`. Seeds are deterministic: repetition `i` uses
 `base_seed + i`, so a base of 662 produces 662, 663, and 664, each recorded in its manifest.
 
+The reduced final matrix, duration, evidence-reuse rule, failure schedule, admission gates, and
+single automated execution command are frozen in
+[`docs/FINAL_CONTROLLED_EXPERIMENTS.md`](docs/FINAL_CONTROLLED_EXPERIMENTS.md). Do not substitute the
+broader Phase 3 examples below for that reviewed design.
+
 Supported experiment families are:
 
-- `scaling`: vary `--nodes` (the planned matrix is 5, 10, 25, 50, 100).
+- `scaling`: vary `--nodes`; the frozen final levels are 5, 25, and 100.
 - `aggregation`: use `--aggregation raw` or a positive window in seconds, such as
   `--aggregation 1`, `5`, or `10`.
 - `failure`: set `--failure-at` and optional `--recovery-at`, relative to measurement start. If
@@ -205,6 +210,8 @@ network-efficiency metrics; deduplicated values are retained as logical-record m
 payloads under one `record_id` are rejected.
 
 Analysis rejects absent, failed, interrupted, schema-incompatible, or internally inconsistent runs.
+New successful runs record `run_summary.status == "success"`; legacy `"complete"` evidence remains
+readable but cannot satisfy final scientific admission.
 `delivery_ratio` uses non-duplicate virtual readings received in the measurement receive window over
 the independent scheduled denominator. If boundary leakage or accounting could make that value
 exceed one, analysis emits `null`, records the invalidation reason, and plotting excludes it. A

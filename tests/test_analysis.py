@@ -470,3 +470,62 @@ def test_failure_analysis_separates_suspect_offline_and_recovery(tmp_path: Path)
     assert metrics["failure_suspect_detection_time_ms"] == 50
     assert metrics["failure_offline_detection_time_ms"] == 150
     assert metrics["recovery_detection_time_ms"] == 50
+
+
+def test_scientific_admission_requires_explicit_integrity_gates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = write_run(tmp_path)
+    summary = json.loads((run_dir / "run_summary.json").read_text())
+    summary["status"] = "success"
+    summary["collector"] = {
+        "messages_received": 3,
+        "bytes_received": 1_210,
+        "invalid_messages": 0,
+        "overlong_messages": 0,
+        "truncated_messages": 0,
+    }
+    (run_dir / "run_summary.json").write_text(json.dumps(summary))
+    gateway = {
+        "gateway": {
+            "invalid_messages": 0,
+            "malformed_json": 0,
+            "rejected_readings": 0,
+            "schema_rejections": 0,
+            "overlong_messages": 0,
+            "truncated_messages": 0,
+        },
+        "storage": {"records_enqueued": 3, "records_written": 3},
+        "upstream": {
+            "upstream_messages": 3,
+            "upstream_bytes": 1_210,
+            "queue_full_drops": 0,
+            "records_abandoned_on_shutdown": 0,
+        },
+        "events": {
+            "gateway": {"queue_full_drops": 0},
+            "health": {"queue_full_drops": 0},
+        },
+    }
+    (run_dir / "gateway_summary.json").write_text(json.dumps(gateway))
+    monkeypatch.setattr("analysis.analyze.git_context", lambda _repository: ("abc", False, []))
+
+    metrics, _output = analyze_run(run_dir, processed_root=tmp_path / "processed")
+
+    assert metrics["scientific_admission"]["passed"] is True
+    assert metrics["scientific_admission"]["failed_checks"] == []
+
+
+def test_scientific_admission_preserves_but_excludes_failed_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = write_run(tmp_path)
+    monkeypatch.setattr("analysis.analyze.git_context", lambda _repository: ("abc", False, []))
+
+    metrics, output = analyze_run(run_dir, processed_root=tmp_path / "processed")
+
+    assert metrics["scientific_admission"]["passed"] is False
+    assert "run_summary_status_success" in metrics["scientific_admission"][
+        "failed_checks"
+    ]
+    assert (output / "metrics.json").exists()
