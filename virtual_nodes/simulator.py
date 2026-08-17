@@ -86,6 +86,11 @@ class VirtualNodeSimulator:
             self._start_incarnation(index)
         try:
             await asyncio.sleep(self.warmup_seconds)
+            # Place measurement boundaries halfway between the nodes' periodic sample
+            # instants. This keeps an exact-duration interval from nondeterministically
+            # counting a sample generated exactly at its closing boundary.
+            measurement_boundary_guard_seconds = self.sampling_interval / 2
+            await asyncio.sleep(measurement_boundary_guard_seconds)
             measurement_start_ms = time.time_ns() // 1_000_000
             baseline = self._totals()
             failure_task = (
@@ -109,6 +114,12 @@ class VirtualNodeSimulator:
                 "run_start_ms": run_start_ms,
                 "measurement_start_ms": measurement_start_ms,
                 "measurement_end_ms": measurement_end_ms,
+                "measurement_boundary_guard_seconds": (
+                    measurement_boundary_guard_seconds
+                ),
+                "effective_warmup_seconds": (
+                    self.warmup_seconds + measurement_boundary_guard_seconds
+                ),
                 "run_end_ms": run_end_ms,
                 "failure_node_id": (
                     "virtual-000" if self.failure_at_seconds is not None else None

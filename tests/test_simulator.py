@@ -30,8 +30,10 @@ async def test_simulator_persists_node_accounting(tmp_path: Path) -> None:
     summary = json.loads((tmp_path / "simulator.json").read_text())
     assert len(rows) == 2
     assert all(int(row["scheduled_readings"]) == 4 for row in rows)
-    assert all(int(row["successful_writes"]) >= 3 for row in rows)
+    assert all(int(row["samples_generated"]) == 4 for row in rows)
+    assert all(int(row["successful_writes"]) == 4 for row in rows)
     assert summary["measurement_start_ms"] <= summary["measurement_end_ms"]
+    assert summary["measurement_boundary_guard_seconds"] == 0.005
 
 
 async def test_simulator_failure_and_recovery_creates_new_incarnation(tmp_path: Path) -> None:

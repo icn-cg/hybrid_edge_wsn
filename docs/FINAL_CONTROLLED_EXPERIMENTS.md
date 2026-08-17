@@ -23,6 +23,11 @@ permitted unless a later reviewed experiment supplies that evidence.
 - Repetition seeds: 662, 663, and 664.
 - Seed rule: `random_seed = 662 + zero-based repetition_index`.
 
+The simulator adds a recorded half-sampling-interval boundary guard after the 60-second warm-up,
+placing measurement start/end between periodic sample instants. The configured warm-up remains the
+minimum stabilization period; the guard prevents a closing-boundary sample from entering generator
+counts while being excluded from receive-window counts.
+
 The design has nine unique conditions and 27 unique executions. Nominal acquisition time is
 `27 × (60 + 300) = 9,720 seconds = 162 minutes`. Allow approximately 165–175 minutes overall for
 process startup, shutdown, gate evaluation, and per-run analysis. This is operationally reasonable,

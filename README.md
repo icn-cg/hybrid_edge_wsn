@@ -179,7 +179,9 @@ Supported experiment families are:
   delay application messages; they do not emulate or measure Wi-Fi packet loss.
 
 Warm-up traffic is preserved as raw evidence, but normal analysis uses only the recorded
-`measurement_start_ms` through `measurement_end_ms` interval.
+`measurement_start_ms` through `measurement_end_ms` interval. The simulator records a
+half-sampling-interval guard after warm-up so exact-duration boundaries fall between periodic sample
+instants rather than nondeterministically counting a closing-boundary sample.
 
 ## Analyze immutable evidence
 
